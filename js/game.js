@@ -2,6 +2,8 @@ import { TileMap, TILE } from "./tiles.js";
 import { Mole, drawMole } from "./mole.js";
 import { InputController } from "./input.js";
 import { HUD } from "./hud.js";
+import { CreatureManager, drawCreature } from "./creatures.js";
+import { drawTerrainTile, drawBackgroundHills } from "./textures.js";
 
 const TILE_SIZE = 48;
 const MAP_WIDTH = 40;
@@ -35,9 +37,10 @@ export class Game {
 
   _newMap() {
     this.map = new TileMap(MAP_WIDTH, MAP_HEIGHT, { skyRows: SKY_ROWS });
-    this.mole = new Mole(this.map, Math.floor(MAP_WIDTH / 2), this.map.grassRow);
+    this.mole = new Mole(this.map, Math.floor(MAP_WIDTH / 2), this.map.surfaceRow);
     this.mole.onScoreChange = (score) => this.hud.setScore(score);
     this.mole.onEnergyChange = (energy) => this.hud.setEnergy(energy);
+    this.creatures = new CreatureManager(this.map, this.mole.col);
     this.camera.x = this.mole.col * TILE_SIZE;
     this.camera.y = this.mole.row * TILE_SIZE;
     this.hud.setScore(0);
@@ -109,8 +112,9 @@ export class Game {
     if (this.state === "playing") {
       this._handleContinuousInput();
       this.mole.update(dt);
+      this.creatures.update(dt, this.mole);
       this._updateCamera(dt);
-      this.hud.setDepth(Math.round(this.mole.row - this.map.grassRow));
+      this.hud.setDepth(Math.round(this.mole.row - this.map.surfaceRow));
     }
 
     this._render(now);
@@ -131,6 +135,26 @@ export class Game {
     const smoothing = 1 - Math.pow(0.001, dt / 1000);
     this.camera.x += (targetX - this.camera.x) * smoothing;
     this.camera.y += (targetY - this.camera.y) * smoothing;
+    this._clampCamera();
+  }
+
+  // Keeps the viewport from ever showing past the world's edges. The camera just stops
+  // moving once it hits a bound - it isn't "stuck", it resumes following the moment the
+  // mole heads back the other way, since the lerp target will fall back inside the clamp.
+  _clampCamera() {
+    const worldW = this.map.width * TILE_SIZE;
+    const worldH = this.map.height * TILE_SIZE;
+    const halfW = this.viewW / 2;
+    const halfH = this.viewH / 2;
+
+    this.camera.x = worldW <= this.viewW
+      ? worldW / 2
+      : Math.min(Math.max(this.camera.x, halfW), worldW - halfW);
+
+    const maxCameraY = worldH - halfH;
+    if (maxCameraY > 0) {
+      this.camera.y = Math.min(this.camera.y, maxCameraY);
+    }
   }
 
   _render(now) {
@@ -147,6 +171,9 @@ export class Game {
     const originX = viewW / 2 - camera.x;
     const originY = viewH / 2 - camera.y;
 
+    // Pure-scenery rolling hills behind the surface line - not a tile, not interactive.
+    drawBackgroundHills(ctx, viewW, viewH, originX, originY + this.map.surfaceRow * TILE_SIZE);
+
     const startCol = Math.max(0, Math.floor(-originX / TILE_SIZE) - 1);
     const endCol = Math.min(this.map.width - 1, Math.ceil((viewW - originX) / TILE_SIZE) + 1);
     const startRow = Math.max(0, Math.floor(-originY / TILE_SIZE) - 1);
@@ -155,57 +182,27 @@ export class Game {
     for (let row = startRow; row <= endRow; row++) {
       for (let col = startCol; col <= endCol; col++) {
         const tile = this.map.getTile(col, row);
+        if (tile === TILE.SKY) continue;
         const x = originX + col * TILE_SIZE;
         const y = originY + row * TILE_SIZE;
-        this._drawTile(ctx, tile, x, y, col, row);
+        drawTerrainTile(ctx, this.map, tile, col, row, x, y, TILE_SIZE);
       }
+    }
+
+    // Creatures (culled to viewport, hidden while buried inside solid dirt).
+    for (const c of this.creatures.list) {
+      const checkCol = Math.round(c.px);
+      const checkRow = Math.round(c.py);
+      if (c.type === "WORM" && this.map.getTile(checkCol, checkRow).solid) continue;
+      const x = originX + c.px * TILE_SIZE;
+      const y = originY + c.py * TILE_SIZE;
+      if (x < -TILE_SIZE || x > viewW + TILE_SIZE || y < -TILE_SIZE || y > viewH + TILE_SIZE) continue;
+      drawCreature(ctx, c, x, y, TILE_SIZE, now);
     }
 
     // Mole
     const moleX = originX + this.mole.px * TILE_SIZE;
     const moleY = originY + this.mole.py * TILE_SIZE;
     drawMole(ctx, this.mole, moleX, moleY, TILE_SIZE, now);
-  }
-
-  _drawTile(ctx, tile, x, y, col, row) {
-    if (tile === TILE.SKY) return; // background gradient already covers it
-
-    if (tile === TILE.TUNNEL) {
-      ctx.fillStyle = "#2a1e14";
-      ctx.fillRect(x, y, TILE_SIZE, TILE_SIZE);
-      return;
-    }
-
-    ctx.fillStyle = tile.color;
-    ctx.fillRect(x, y, TILE_SIZE, TILE_SIZE);
-
-    if (tile === TILE.GRASS) {
-      ctx.fillStyle = tile.accent;
-      for (let i = 0; i < 4; i++) {
-        const bx = x + 4 + i * (TILE_SIZE - 8) / 3;
-        ctx.fillRect(bx, y, 2, 6);
-      }
-    } else if (tile.diggable) {
-      // subtle speckle texture, deterministic per-tile so it doesn't shimmer
-      ctx.fillStyle = tile.accent;
-      const seedA = (col * 928371 + row * 12923) % 7;
-      const seedB = (col * 51 + row * 733) % 5;
-      ctx.fillRect(x + 6 + seedA * 4, y + 8 + seedB * 3, 4, 4);
-      ctx.fillRect(x + TILE_SIZE - 14 - seedB * 3, y + TILE_SIZE - 16 - seedA * 2, 5, 5);
-      if (tile === TILE.ROOT) {
-        ctx.strokeStyle = tile.accent;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(x + 4, y + TILE_SIZE / 2);
-        ctx.lineTo(x + TILE_SIZE - 4, y + TILE_SIZE / 2 + (seedA - 3) * 3);
-        ctx.stroke();
-      }
-    } else if (tile === TILE.ROCK) {
-      ctx.fillStyle = tile.accent;
-      ctx.beginPath();
-      ctx.arc(x + TILE_SIZE * 0.35, y + TILE_SIZE * 0.4, TILE_SIZE * 0.18, 0, Math.PI * 2);
-      ctx.arc(x + TILE_SIZE * 0.65, y + TILE_SIZE * 0.6, TILE_SIZE * 0.16, 0, Math.PI * 2);
-      ctx.fill();
-    }
   }
 }

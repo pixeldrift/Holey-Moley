@@ -1,15 +1,19 @@
-import { TILE, MOVE_ACTION } from "./tiles.js";
+import { MOVE_ACTION, CORNER } from "./tiles.js";
+import { ENERGY, FOOD_TYPES, FOOD_ID_TO_TYPE } from "./constants.js";
 
 const WALK_DURATION = 220;
 const CLIMB_DURATION = 260;
-const WALK_ENERGY = 0.5;
-const CLIMB_ENERGY = 1.2;
-const EAT_DURATION = 350;
-const FOOD_ENERGY = 28;
-const FOOD_SCORE = 15;
-const DIG_SCORE = { DIRT_SOFT: 2, DIRT_MEDIUM: 4, DIRT_HARD: 8, ROOT: 14, GRASS: 1 };
 
-export const MAX_ENERGY = 100;
+// Which corner of each of the two "elbow" tiles (the orthogonal neighbors flanking a
+// diagonal step) gets shaved off, keyed by the move's [dx,dy]. See tiles.js CORNER.
+const DIAGONAL_ELBOW_CORNERS = {
+  "1,1": [CORNER.SW, CORNER.NE],
+  "1,-1": [CORNER.NW, CORNER.SE],
+  "-1,1": [CORNER.SE, CORNER.NW],
+  "-1,-1": [CORNER.NE, CORNER.SW],
+};
+
+export const MAX_ENERGY = ENERGY.MAX;
 
 export class Mole {
   constructor(tileMap, startCol, startRow) {
@@ -19,7 +23,7 @@ export class Mole {
     this.px = startCol; // position in tile units (float, for smooth interpolation)
     this.py = startRow;
     this.facing = "right"; // 'left' | 'right'
-    this.state = "idle"; // idle | walk | climb | dig | eat | exhausted | blocked
+    this.state = "idle"; // idle | walk | climb | dig | eat | sleep
     this.energy = MAX_ENERGY;
     this.score = 0;
     this.actionElapsed = 0;
@@ -28,6 +32,7 @@ export class Mole {
     this.actionType = null;
     this.bumpTimer = 0;
     this.eatTimer = 0;
+    this.hurtTimer = 0;
     this.onScoreChange = null;
     this.onEnergyChange = null;
     this.onEvent = null; // (name, data) for HUD toasts / juice
@@ -37,11 +42,13 @@ export class Mole {
     return this.actionTarget !== null;
   }
 
-  /** Request movement in a grid direction. Ignored if already mid-action or direction invalid. */
+  /** Request movement in a grid direction (8-way - diagonals dig/walk/climb too). */
   requestMove(dx, dy) {
+    if (this.state === "sleep") return;
     if (this.isBusy) return;
+    dx = Math.sign(dx);
+    dy = Math.sign(dy);
     if (dx === 0 && dy === 0) return;
-    if (dx !== 0) dy = 0; // cardinal only, prioritize horizontal if diagonal sneaks in
 
     const targetCol = this.col + dx;
     const targetRow = this.row + dy;
@@ -51,6 +58,11 @@ export class Mole {
     if (dx > 0) this.facing = "right";
     if (dx < 0) this.facing = "left";
 
+    // Diagonal moves cover sqrt(2) the distance of an orthogonal one - scale the travel
+    // time to match so diagonal digging/walking doesn't look like it's teleporting.
+    const isDiagonal = dx !== 0 && dy !== 0;
+    const distanceScale = isDiagonal ? Math.SQRT2 : 1;
+
     const targetTile = this.map.getTile(targetCol, targetRow);
 
     if (targetTile.solid) {
@@ -58,25 +70,14 @@ export class Mole {
         this._bump();
         return;
       }
-      const cost = targetTile.digEnergyCost;
-      if (this.energy < cost * 0.4) {
-        this._bump();
-        this.state = "exhausted";
-        this.onEvent?.("exhausted");
-        return;
-      }
-      this._beginAction(MOVE_ACTION.DIG, targetCol, targetRow, targetTile.digDuration, cost, targetTile);
+      this._beginAction(MOVE_ACTION.DIG, targetCol, targetRow, targetTile.digDuration * distanceScale, targetTile.digEnergyCost, targetTile);
       return;
     }
 
-    // Open space: climbing if vertical move, walking if horizontal.
+    // Open space: climbing if there's any vertical component (includes diagonals), walking if purely horizontal.
     const isVertical = dy !== 0;
-    const duration = isVertical ? CLIMB_DURATION : WALK_DURATION;
-    const cost = isVertical ? CLIMB_ENERGY : WALK_ENERGY;
-    if (this.energy < cost) {
-      this.state = "exhausted";
-      return;
-    }
+    const duration = (isVertical ? CLIMB_DURATION : WALK_DURATION) * distanceScale;
+    const cost = isVertical ? ENERGY.CLIMB_COST : ENERGY.WALK_COST;
     this._beginAction(isVertical ? MOVE_ACTION.CLIMB : MOVE_ACTION.WALK, targetCol, targetRow, duration, cost, targetTile);
   }
 
@@ -97,6 +98,10 @@ export class Mole {
   _spendEnergy(amount) {
     this.energy = Math.max(0, this.energy - amount);
     this.onEnergyChange?.(this.energy);
+    if (this.energy <= 0 && this.state !== "sleep") {
+      this.state = "sleep";
+      this.onEvent?.("sleep");
+    }
   }
 
   _addScore(amount) {
@@ -107,9 +112,15 @@ export class Mole {
 
   update(dt) {
     if (this.bumpTimer > 0) this.bumpTimer = Math.max(0, this.bumpTimer - dt);
+    if (this.hurtTimer > 0) this.hurtTimer = Math.max(0, this.hurtTimer - dt);
     if (this.eatTimer > 0) {
       this.eatTimer -= dt;
-      if (this.eatTimer <= 0) this.state = "idle";
+      if (this.eatTimer <= 0 && this.state === "eat") this.state = "idle";
+    }
+
+    if (this.state === "sleep") {
+      this._updateSleep(dt);
+      return;
     }
 
     if (this.actionTarget) {
@@ -124,23 +135,36 @@ export class Mole {
       return;
     }
 
-    // idle drift toward exact tile (snap) + passive tiny energy regen while idle
     this.px = this.col;
     this.py = this.row;
     if (this.state !== "eat") {
-      this.state = this.energy <= 0 ? "exhausted" : "idle";
+      this.state = "idle";
+    }
+  }
+
+  _updateSleep(dt) {
+    this.energy = Math.min(MAX_ENERGY, this.energy + (ENERGY.SLEEP_REGEN_PER_SEC * dt) / 1000);
+    this.onEnergyChange?.(this.energy);
+    if (this.energy >= ENERGY.WAKE_THRESHOLD) {
+      this.state = "idle";
+      this.onEvent?.("wake");
     }
   }
 
   _completeAction() {
     const { col, row, tile } = this.actionTarget;
+    const dx = col - this.col;
+    const dy = row - this.row;
 
     if (this.actionType === MOVE_ACTION.DIG) {
       this.map.digOut(col, row);
-      this._addScore(DIG_SCORE[tile.id] ?? 1);
+      this._addScore(tile.digScore ?? 1);
+      if (dx !== 0 && dy !== 0) {
+        this._carveDiagonalElbows(this.col, this.row, dx, dy);
+      }
     }
 
-    this._spendEnergy(this._pendingEnergyCost);
+    this._spendEnergy(this._pendingEnergyCost); // may put the mole to sleep
 
     this.col = col;
     this.row = row;
@@ -149,20 +173,44 @@ export class Mole {
     this.actionTarget = null;
     this.actionType = null;
 
-    if (this.map.consumeFood(col, row)) {
-      this._eatFood();
-    } else {
-      this.state = this.energy <= 0 ? "exhausted" : "idle";
+    const foodId = this.map.consumeFood(col, row);
+    const typeKey = FOOD_ID_TO_TYPE[foodId];
+    if (typeKey) {
+      this._applyFood(typeKey);
+    } else if (this.state !== "sleep") {
+      this.state = "idle";
     }
   }
 
-  _eatFood() {
-    this.energy = Math.min(MAX_ENERGY, this.energy + FOOD_ENERGY);
+  /** Notches the two orthogonal neighbors flanking a diagonal step so the boundary between
+   *  dirt and tunnel reads as one straight 45 degree line instead of a staircase. */
+  _carveDiagonalElbows(fromCol, fromRow, dx, dy) {
+    const [cornerA, cornerB] = DIAGONAL_ELBOW_CORNERS[`${dx},${dy}`];
+    this.map.cutCorner(fromCol + dx, fromRow, cornerA);
+    this.map.cutCorner(fromCol, fromRow + dy, cornerB);
+  }
+
+  _applyFood(typeKey) {
+    const stats = FOOD_TYPES[typeKey];
+    if (!stats) return;
+    this.energy = Math.min(MAX_ENERGY, this.energy + stats.energy);
     this.onEnergyChange?.(this.energy);
-    this._addScore(FOOD_SCORE);
+    this._addScore(stats.score);
     this.state = "eat";
-    this.eatTimer = EAT_DURATION;
-    this.onEvent?.("eat", { col: this.col, row: this.row });
+    this.eatTimer = stats.nibbleDuration * stats.slowFactor;
+    this.onEvent?.("eat", { col: this.col, row: this.row, type: typeKey });
+  }
+
+  /** Called by the creature manager when the mole moves into a critter's cell. */
+  eatCreature(typeKey) {
+    this._applyFood(typeKey);
+  }
+
+  /** Called by the creature manager when an ant catches the mole from behind. */
+  takeDamage(amount) {
+    this._spendEnergy(amount);
+    this.hurtTimer = 300;
+    this.onEvent?.("hurt", { amount });
   }
 }
 
@@ -175,22 +223,30 @@ function easeInOutQuad(t) {
 
 // ---------------------------------------------------------------------------
 // Procedural mole sprite. No image assets yet - this draws the mole and its
-// walk/dig/climb/eat animation cycles with canvas primitives. Swap the body
-// of drawMole() for spritesheet blitting later without changing Mole's API.
+// walk/dig/climb/eat/sleep animation cycles with canvas primitives. Swap the
+// body of drawMole() for spritesheet blitting later without changing Mole's API.
 // ---------------------------------------------------------------------------
 
 export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
   const t = nowMs / 1000;
   const flip = mole.facing === "left" ? -1 : 1;
   const bump = mole.bumpTimer > 0 ? Math.sin(mole.bumpTimer / 220 * Math.PI) * 4 : 0;
+  const hurtFlash = mole.hurtTimer > 0;
+
+  if (mole.state === "sleep") {
+    drawSleepingMole(ctx, mole, screenX, screenY, tileSize, t);
+    return;
+  }
 
   ctx.save();
   ctx.translate(screenX + tileSize / 2 + bump * -flip, screenY + tileSize / 2);
 
   const isVertical = mole.actionType === MOVE_ACTION.CLIMB;
-  if (isVertical) {
-    // Orient body vertically while climbing.
-    ctx.rotate(mole.py < mole.row || (mole.actionTarget && mole.actionTarget.row < mole.row) ? -Math.PI / 2 : Math.PI / 2);
+  if (isVertical && mole.actionTarget) {
+    const goingUp = mole.actionTarget.row < mole.row;
+    const fullTilt = goingUp ? -Math.PI / 2 : Math.PI / 2;
+    const isDiagonal = mole.actionTarget.col !== mole.col;
+    ctx.rotate(isDiagonal ? fullTilt / 2 : fullTilt);
   }
   ctx.scale(flip, 1);
 
@@ -200,8 +256,8 @@ export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
 
   ctx.translate(0, bob * s);
 
-  const bodyColor = "#8b6f47";
-  const bellyColor = "#e6cfa0";
+  const bodyColor = hurtFlash ? "#c0503f" : "#8b6f47";
+  const bellyColor = hurtFlash ? "#f0b3a8" : "#e6cfa0";
   const darkColor = "#5c4529";
 
   // Legs (behind body), animate paw swipe when digging.
@@ -282,15 +338,86 @@ export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
   }
 
   ctx.restore();
+}
 
-  // Exhausted indicator (drawn unrotated, above head)
-  if (mole.state === "exhausted") {
-    ctx.save();
-    ctx.font = `${14 * s}px sans-serif`;
-    ctx.textAlign = "center";
-    ctx.fillText("😮‍💨", screenX + tileSize / 2, screenY - 4);
-    ctx.restore();
+function drawSleepingMole(ctx, mole, screenX, screenY, tileSize, t) {
+  const flip = mole.facing === "left" ? -1 : 1;
+  const s = tileSize / 48;
+  const cx = screenX + tileSize / 2;
+  const cy = screenY + tileSize / 2;
+
+  ctx.save();
+  ctx.translate(cx, cy + 6 * s);
+  ctx.scale(flip, 1);
+
+  const breathe = 1 + Math.sin(t * 2.4) * 0.04;
+
+  // Tail
+  ctx.strokeStyle = "#5c4529";
+  ctx.lineWidth = 2 * s;
+  ctx.beginPath();
+  ctx.moveTo(-16 * s, 2 * s);
+  ctx.quadraticCurveTo(-24 * s, -2 * s, -20 * s, -8 * s);
+  ctx.stroke();
+
+  // Body lying on its side - wide flat ellipse, gently "breathing" via scale.
+  ctx.save();
+  ctx.translate(0, 0);
+  ctx.scale(1, breathe);
+  ctx.fillStyle = "#8b6f47";
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 18 * s, 10 * s, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#e6cfa0";
+  ctx.beginPath();
+  ctx.ellipse(2 * s, 4 * s, 12 * s, 5 * s, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Snout resting on the ground
+  ctx.fillStyle = "#d98a9a";
+  ctx.beginPath();
+  ctx.ellipse(17 * s, 3 * s, 4.5 * s, 3 * s, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Closed eye - a small curved lash
+  ctx.strokeStyle = "#241a12";
+  ctx.lineWidth = 1.4 * s;
+  ctx.beginPath();
+  ctx.arc(8 * s, -3 * s, 2.4 * s, 0.2 * Math.PI, 0.9 * Math.PI);
+  ctx.stroke();
+
+  // Ear
+  ctx.fillStyle = "#5c4529";
+  ctx.beginPath();
+  ctx.arc(-4 * s, -9 * s, 3 * s, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Tucked paws
+  ctx.fillStyle = "#c9a876";
+  ctx.beginPath();
+  ctx.ellipse(10 * s, 8 * s, 4 * s, 3 * s, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+
+  // Floating "Z Z Z" - drawn unrotated/unflipped, in screen space above the head.
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (let i = 0; i < 3; i++) {
+    const phase = (t * 0.9 + i * 0.33) % 1;
+    const size = (10 + i * 4) * s;
+    const x = cx + (14 + i * 8) * s * flip;
+    const y = cy - 14 * s - phase * 22 * s;
+    const alpha = phase < 0.15 ? phase / 0.15 : phase > 0.75 ? (1 - phase) / 0.25 : 1;
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.fillStyle = "#3a4a6b";
+    ctx.font = `bold ${size}px sans-serif`;
+    ctx.fillText("Z", x, y);
   }
+  ctx.restore();
 }
 
 function drawLeg(ctx, x, y, swing, s) {

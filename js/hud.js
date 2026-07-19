@@ -1,10 +1,13 @@
 import { MAX_ENERGY } from "./mole.js";
+import { ENERGY } from "./constants.js";
 
 export class HUD {
   constructor() {
     this.scoreEl = document.getElementById("score-value");
     this.depthEl = document.getElementById("depth-value");
     this.energyFillEl = document.getElementById("energy-fill");
+    this.energyBoxEl = document.getElementById("energy-box");
+    this.energyWarnEl = document.getElementById("energy-warn");
 
     this.startScreen = document.getElementById("start-screen");
     this.pauseScreen = document.getElementById("pause-screen");
@@ -69,10 +72,18 @@ export class HUD {
   setEnergy(energy) {
     const pct = Math.max(0, Math.min(100, (energy / MAX_ENERGY) * 100));
     this.energyFillEl.style.width = `${pct}%`;
+
+    const critical = pct <= ENERGY.CRITICAL_THRESHOLD;
+    const low = pct <= ENERGY.LOW_THRESHOLD;
+
     let color;
-    if (pct > 55) color = "linear-gradient(90deg,#4caf50,#8bc34a)";
-    else if (pct > 25) color = "linear-gradient(90deg,#f9a825,#fbc02d)";
-    else color = "linear-gradient(90deg,#e53935,#ef5350)";
+    if (critical) color = "linear-gradient(90deg,#e53935,#ef5350)";
+    else if (low) color = "linear-gradient(90deg,#f9a825,#fbc02d)";
+    else color = "linear-gradient(90deg,#4caf50,#8bc34a)";
     this.energyFillEl.style.background = color;
+
+    this.energyBoxEl.classList.toggle("low", low && !critical);
+    this.energyBoxEl.classList.toggle("critical", critical);
+    this.energyWarnEl.classList.toggle("hidden", !critical);
   }
 }

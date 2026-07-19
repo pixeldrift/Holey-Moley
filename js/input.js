@@ -6,6 +6,8 @@
 //  - release without much movement -> a single-step "tap" nudge, direction
 //    chosen relative to the mole's on-screen position (passed in via getMoleScreenPos).
 //
+// Directions snap to 8 ways (orthogonal + diagonal) so the mole can dig at 45 degrees.
+//
 // Consumers read `getDirection()` each tick for continuous movement, and
 // register onStep(dx,dy) for one-shot taps/key-presses.
 
@@ -62,8 +64,7 @@ export class InputController {
       const [kx, ky] = KEY_DIRS[code];
       dx += kx; dy += ky;
     }
-    // Keep it cardinal-only: prefer the most recently added key's axis if both set.
-    if (dx !== 0 && dy !== 0) dy = 0;
+    // Holding two adjacent-axis keys (e.g. Up+Right) gives a diagonal.
     this.keyDir.dx = Math.sign(dx);
     this.keyDir.dy = Math.sign(dy);
   }
@@ -84,7 +85,7 @@ export class InputController {
     const dist = Math.hypot(dx, dy);
     if (dist > DRAG_THRESHOLD) {
       this._dragging = true;
-      this.pointerDir = cardinalFromVector(dx, dy);
+      this.pointerDir = octantFromVector(dx, dy);
     }
   }
 
@@ -96,7 +97,7 @@ export class InputController {
       const dx = e.clientX - molePos.x;
       const dy = e.clientY - molePos.y;
       if (Math.hypot(dx, dy) > 6) {
-        const dir = cardinalFromVector(dx, dy);
+        const dir = octantFromVector(dx, dy);
         this.onStep?.(dir.dx, dir.dy);
       }
     }
@@ -113,9 +114,10 @@ export class InputController {
   }
 }
 
-function cardinalFromVector(dx, dy) {
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    return { dx: dx > 0 ? 1 : -1, dy: 0 };
-  }
-  return { dx: 0, dy: dy > 0 ? 1 : -1 };
+// Snaps a drag/swipe/tap vector to one of 8 directions (orthogonal + diagonal).
+function octantFromVector(dx, dy) {
+  const angle = Math.atan2(dy, dx);
+  const step = Math.PI / 4;
+  const snapped = Math.round(angle / step) * step;
+  return { dx: Math.round(Math.cos(snapped)), dy: Math.round(Math.sin(snapped)) };
 }
