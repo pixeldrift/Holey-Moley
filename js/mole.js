@@ -1,8 +1,17 @@
-import { MOVE_ACTION } from "./tiles.js";
+import { MOVE_ACTION, CORNER } from "./tiles.js";
 import { ENERGY, FOOD_TYPES, FOOD_ID_TO_TYPE } from "./constants.js";
 
 const WALK_DURATION = 220;
 const CLIMB_DURATION = 260;
+
+// Which corner of each of the two "elbow" tiles (the orthogonal neighbors flanking a
+// diagonal step) gets shaved off, keyed by the move's [dx,dy]. See tiles.js CORNER.
+const DIAGONAL_ELBOW_CORNERS = {
+  "1,1": [CORNER.SW, CORNER.NE],
+  "1,-1": [CORNER.NW, CORNER.SE],
+  "-1,1": [CORNER.SE, CORNER.NW],
+  "-1,-1": [CORNER.NE, CORNER.SW],
+};
 
 export const MAX_ENERGY = ENERGY.MAX;
 
@@ -144,10 +153,15 @@ export class Mole {
 
   _completeAction() {
     const { col, row, tile } = this.actionTarget;
+    const dx = col - this.col;
+    const dy = row - this.row;
 
     if (this.actionType === MOVE_ACTION.DIG) {
       this.map.digOut(col, row);
       this._addScore(tile.digScore ?? 1);
+      if (dx !== 0 && dy !== 0) {
+        this._carveDiagonalElbows(this.col, this.row, dx, dy);
+      }
     }
 
     this._spendEnergy(this._pendingEnergyCost); // may put the mole to sleep
@@ -166,6 +180,14 @@ export class Mole {
     } else if (this.state !== "sleep") {
       this.state = "idle";
     }
+  }
+
+  /** Notches the two orthogonal neighbors flanking a diagonal step so the boundary between
+   *  dirt and tunnel reads as one straight 45 degree line instead of a staircase. */
+  _carveDiagonalElbows(fromCol, fromRow, dx, dy) {
+    const [cornerA, cornerB] = DIAGONAL_ELBOW_CORNERS[`${dx},${dy}`];
+    this.map.cutCorner(fromCol + dx, fromRow, cornerA);
+    this.map.cutCorner(fromCol, fromRow + dy, cornerB);
   }
 
   _applyFood(typeKey) {

@@ -7,7 +7,7 @@
 // stamped. Material boundaries get a soft gradient "melt" instead of a hard edge, and tile
 // draws are pixel-rounded + slightly overdrawn so there are no seam/grid-line artifacts.
 
-import { TILE } from "./tiles.js";
+import { TILE, CORNER } from "./tiles.js";
 
 const SWATCH_SIZE = 160;
 
@@ -156,6 +156,12 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
   const py = Math.round(y);
   const overdraw = tileSize + 1;
 
+  const cornerCut = tile.diggable ? map.getCornerCut(col, row) : CORNER.NONE;
+  if (cornerCut !== CORNER.NONE) {
+    _drawDiagonalTile(ctx, swatches, swatch, cornerCut, col, row, px, py, tileSize, overdraw);
+    return;
+  }
+
   if (swatch) {
     // Sample using continuous world-space coordinates (not a per-tile random crop) so the
     // texture flows unbroken from one tile into the next instead of looking patchworked.
@@ -185,6 +191,54 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
   if (tile === TILE.SURFACE) {
     _drawGrassCap(ctx, col, px, py, tileSize);
   }
+}
+
+// The four points of a tile, in canvas order, used to build the triangular clip paths below.
+function _tileCorners(px, py, tileSize) {
+  return {
+    NW: [px, py],
+    NE: [px + tileSize, py],
+    SE: [px + tileSize, py + tileSize],
+    SW: [px, py + tileSize],
+  };
+}
+
+// Given which corner's triangle was cut away, returns the 3 points of the SOLID triangle
+// that remains (always the corner diagonally opposite the one that was cut).
+function _solidTrianglePoints(cornerCut, corners) {
+  switch (cornerCut) {
+    case CORNER.SW: return [corners.NW, corners.NE, corners.SE]; // NE half solid
+    case CORNER.NE: return [corners.NW, corners.SW, corners.SE]; // SW half solid
+    case CORNER.SE: return [corners.NW, corners.NE, corners.SW]; // NW half solid
+    case CORNER.NW: return [corners.NE, corners.SE, corners.SW]; // SE half solid
+    default: return null;
+  }
+}
+
+// Renders a tile that's had one triangular half opened up by a diagonal dig: fill the whole
+// cell as tunnel first (that becomes the open half), then clip to the remaining solid
+// triangle and paint the material texture only inside it - the boundary between the two
+// is a single straight 45 degree line, continuous with the neighboring tiles' own cuts.
+function _drawDiagonalTile(ctx, swatches, swatch, cornerCut, col, row, px, py, tileSize, overdraw) {
+  ctx.drawImage(swatches.TUNNEL, 0, 0, tileSize, tileSize, px, py, overdraw, overdraw);
+  if (!swatch) return;
+
+  const corners = _tileCorners(px, py, tileSize);
+  const points = _solidTrianglePoints(cornerCut, corners);
+  if (!points) return;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  ctx.lineTo(points[1][0], points[1][1]);
+  ctx.lineTo(points[2][0], points[2][1]);
+  ctx.closePath();
+  ctx.clip();
+
+  const sx = ((col * tileSize) % SWATCH_SIZE + SWATCH_SIZE) % SWATCH_SIZE;
+  const sy = ((row * tileSize) % SWATCH_SIZE + SWATCH_SIZE) % SWATCH_SIZE;
+  ctx.drawImage(swatch, sx, sy, tileSize, tileSize, px, py, overdraw, overdraw);
+  ctx.restore();
 }
 
 function _drawEdgeBlends(ctx, map, tile, col, row, px, py, tileSize) {

@@ -49,6 +49,11 @@ export const TILE = {
 const MOVE_ACTION = { WALK: "walk", CLIMB: "climb", DIG: "dig" };
 export { MOVE_ACTION };
 
+// A "corner cut" marks a solid tile as having one of its triangular halves opened up -
+// this is what turns a diagonal dig from a blocky staircase into a smooth 45 degree tunnel.
+// The label names the corner whose triangle is REMOVED (the opposite triangle stays solid).
+export const CORNER = { NONE: 0, NE: 1, NW: 2, SE: 3, SW: 4 };
+
 export class TileMap {
   constructor(width, height, { skyRows = 3, seed } = {}) {
     this.width = width;
@@ -57,6 +62,7 @@ export class TileMap {
     this.surfaceRow = skyRows;
     this.grid = new Array(width * height);
     this.food = new Uint8Array(width * height); // holds FOOD_ID codes
+    this.cornerCuts = new Uint8Array(width * height); // holds CORNER codes
     this._rng = mulberry32(seed ?? Date.now());
     this._generate();
   }
@@ -108,7 +114,32 @@ export class TileMap {
   digOut(x, y) {
     const removed = this.getTile(x, y);
     this.setTile(x, y, TILE.TUNNEL);
+    if (this.inBounds(x, y)) this.cornerCuts[this.idx(x, y)] = CORNER.NONE;
     return removed;
+  }
+
+  getCornerCut(x, y) {
+    if (!this.inBounds(x, y)) return CORNER.NONE;
+    return this.cornerCuts[this.idx(x, y)];
+  }
+
+  /**
+   * Shaves the given triangular corner off a solid tile so a diagonal dig reads as one
+   * continuous 45 degree wall instead of two square steps. If the tile already has a
+   * *different* corner cut (a second diagonal path crossed it), just open the whole tile -
+   * that's rare enough not to need real multi-notch geometry.
+   */
+  cutCorner(x, y, corner) {
+    if (!this.inBounds(x, y)) return;
+    const tile = this.getTile(x, y);
+    if (!tile.diggable) return;
+    const i = this.idx(x, y);
+    const existing = this.cornerCuts[i];
+    if (existing === CORNER.NONE) {
+      this.cornerCuts[i] = corner;
+    } else if (existing !== corner) {
+      this.digOut(x, y);
+    }
   }
 
   /** True if this open cell has a solid floor directly beneath it (surface bugs walk here). */
