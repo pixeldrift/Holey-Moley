@@ -1,16 +1,20 @@
 // Tile type definitions and the world grid.
-// Rendering uses flat colors as placeholders until real sprite art is added -
-// swap TILE.*.color for a spritesheet reference later without touching the rest of the game.
+// Rendering uses these as material identities; actual pixel textures live in textures.js
+// so a tile's `color`/`accent` here are only used as a fallback / tint reference.
+
+import { BLOCK_STATS, FOOD_ID } from "./constants.js";
 
 export const TILE = {
   SKY: {
     id: "SKY", solid: false, diggable: false, walkable: true,
     color: null, // sky is painted as a gradient, not a flat tile
   },
-  GRASS: {
-    id: "GRASS", solid: true, diggable: true, walkable: false,
-    digDuration: 260, digEnergyCost: 1.5, digAction: "walk",
-    color: "#5fa832", accent: "#4c8a27",
+  SURFACE: {
+    // The walkway at ground level. Non-diggable - it's just open ground with a thin
+    // decorative grass cap drawn on top (see textures.js). The real grass "hill" scenery
+    // behind it is pure background art, not a tile at all.
+    id: "SURFACE", solid: false, diggable: false, walkable: true,
+    color: "#8a5a34", accent: "#7a4d2a",
   },
   TUNNEL: {
     id: "TUNNEL", solid: false, diggable: false, walkable: true,
@@ -18,22 +22,22 @@ export const TILE = {
   },
   DIRT_SOFT: {
     id: "DIRT_SOFT", solid: true, diggable: true, walkable: false,
-    digDuration: 300, digEnergyCost: 2, digAction: "dig",
+    digAction: "dig", ...BLOCK_STATS.DIRT_SOFT,
     color: "#8a5a34", accent: "#7a4d2a",
   },
   DIRT_MEDIUM: {
     id: "DIRT_MEDIUM", solid: true, diggable: true, walkable: false,
-    digDuration: 520, digEnergyCost: 4, digAction: "dig",
+    digAction: "dig", ...BLOCK_STATS.DIRT_MEDIUM,
     color: "#77492b", accent: "#663e24",
   },
   DIRT_HARD: {
     id: "DIRT_HARD", solid: true, diggable: true, walkable: false,
-    digDuration: 820, digEnergyCost: 7, digAction: "dig",
+    digAction: "dig", ...BLOCK_STATS.DIRT_HARD,
     color: "#5f3a22", accent: "#4f2f1b",
   },
   ROOT: {
     id: "ROOT", solid: true, diggable: true, walkable: false,
-    digDuration: 1300, digEnergyCost: 11, digAction: "dig",
+    digAction: "dig", ...BLOCK_STATS.ROOT,
     color: "#8a5a34", accent: "#c99a53",
   },
   ROCK: {
@@ -50,9 +54,9 @@ export class TileMap {
     this.width = width;
     this.height = height;
     this.skyRows = skyRows;
-    this.grassRow = skyRows;
+    this.surfaceRow = skyRows;
     this.grid = new Array(width * height);
-    this.food = new Uint8Array(width * height);
+    this.food = new Uint8Array(width * height); // holds FOOD_ID codes
     this._rng = mulberry32(seed ?? Date.now());
     this._generate();
   }
@@ -70,19 +74,29 @@ export class TileMap {
     return this.grid[this.idx(x, y)];
   }
 
+  getFoodId(x, y) {
+    if (!this.inBounds(x, y)) return FOOD_ID.NONE;
+    return this.food[this.idx(x, y)];
+  }
+
   hasFood(x, y) {
-    if (!this.inBounds(x, y)) return false;
-    return this.food[this.idx(x, y)] === 1;
+    return this.getFoodId(x, y) !== FOOD_ID.NONE;
   }
 
   consumeFood(x, y) {
-    if (!this.inBounds(x, y)) return false;
+    if (!this.inBounds(x, y)) return FOOD_ID.NONE;
     const i = this.idx(x, y);
-    if (this.food[i] === 1) {
-      this.food[i] = 0;
-      return true;
+    const id = this.food[i];
+    if (id !== FOOD_ID.NONE) {
+      this.food[i] = FOOD_ID.NONE;
+      return id;
     }
-    return false;
+    return FOOD_ID.NONE;
+  }
+
+  setFoodId(x, y, id) {
+    if (!this.inBounds(x, y)) return;
+    this.food[this.idx(x, y)] = id;
   }
 
   setTile(x, y, tile) {
@@ -97,6 +111,13 @@ export class TileMap {
     return removed;
   }
 
+  /** True if this open cell has a solid floor directly beneath it (surface bugs walk here). */
+  hasFloorBelow(x, y) {
+    const here = this.getTile(x, y);
+    if (here.solid) return false;
+    return this.getTile(x, y + 1).solid;
+  }
+
   _generate() {
     const rng = this._rng;
     for (let y = 0; y < this.height; y++) {
@@ -104,10 +125,10 @@ export class TileMap {
         let tile;
         if (y < this.skyRows) {
           tile = TILE.SKY;
-        } else if (y === this.grassRow) {
-          tile = TILE.GRASS;
+        } else if (y === this.surfaceRow) {
+          tile = TILE.SURFACE;
         } else {
-          const depth = y - this.grassRow; // 1..N
+          const depth = y - this.surfaceRow; // 1..N
           tile = this._pickDirtTile(depth, rng);
         }
         this.setTile(x, y, tile);
@@ -118,14 +139,25 @@ export class TileMap {
     this._scatterClusters(TILE.ROCK, 0.010, 2, 4);
     this._scatterClusters(TILE.ROOT, 0.014, 2, 5);
 
-    // Scatter buried food (worms/grubs) - never under grass/sky, weight increases with depth.
-    for (let y = this.grassRow + 1; y < this.height; y++) {
-      const depth = y - this.grassRow;
+    // Buried worms - anywhere diggable, weight increases with depth.
+    for (let y = this.surfaceRow + 1; y < this.height; y++) {
+      const depth = y - this.surfaceRow;
       const chance = Math.min(0.05 + depth * 0.0025, 0.14);
       for (let x = 0; x < this.width; x++) {
         const tile = this.getTile(x, y);
         if (tile.diggable && tile !== TILE.ROOT && rng() < chance) {
-          this.food[this.idx(x, y)] = 1;
+          this.setFoodId(x, y, FOOD_ID.WORM);
+        }
+      }
+    }
+
+    // Root vegetables - shallow only, just under the surface.
+    const rootVeggies = [FOOD_ID.CARROT, FOOD_ID.BEET, FOOD_ID.TURNIP];
+    for (let y = this.surfaceRow + 1; y <= this.surfaceRow + 4; y++) {
+      for (let x = 0; x < this.width; x++) {
+        const tile = this.getTile(x, y);
+        if (tile.diggable && tile !== TILE.ROOT && this.getFoodId(x, y) === FOOD_ID.NONE && rng() < 0.05) {
+          this.setFoodId(x, y, rootVeggies[Math.floor(rng() * rootVeggies.length)]);
         }
       }
     }
@@ -154,7 +186,7 @@ export class TileMap {
     const attempts = Math.floor(this.width * this.height * density);
     for (let i = 0; i < attempts; i++) {
       const cx = Math.floor(rng() * this.width);
-      const cy = this.grassRow + 2 + Math.floor(rng() * (this.height - this.grassRow - 3));
+      const cy = this.surfaceRow + 2 + Math.floor(rng() * (this.height - this.surfaceRow - 3));
       const size = minSize + Math.floor(rng() * (maxSize - minSize + 1));
       this._blob(cx, cy, size, tileType, rng);
     }
@@ -163,9 +195,9 @@ export class TileMap {
   _blob(cx, cy, size, tileType, rng) {
     let x = cx, y = cy;
     for (let i = 0; i < size; i++) {
-      if (this.inBounds(x, y) && y > this.grassRow) {
+      if (this.inBounds(x, y) && y > this.surfaceRow) {
         const current = this.getTile(x, y);
-        if (current !== TILE.SKY && current !== TILE.GRASS) {
+        if (current !== TILE.SKY && current !== TILE.SURFACE) {
           this.setTile(x, y, tileType);
         }
       }
