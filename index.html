@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#7ec8e3" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%B9%3C/text%3E%3C/svg%3E" />
+<title>Hole Mole</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<div id="app">
+  <canvas id="game"></canvas>
+
+  <!-- HUD overlay -->
+  <div id="hud">
+    <div id="hud-top-left" class="hud-corner">
+      <div id="score-box" class="hud-panel">
+        <span class="hud-icon">⭐</span>
+        <span id="score-value">0</span>
+      </div>
+      <div id="energy-box" class="hud-panel">
+        <span class="hud-icon">⚡</span>
+        <div id="energy-bar"><div id="energy-fill"></div></div>
+      </div>
+    </div>
+
+    <div id="hud-top-right" class="hud-corner">
+      <button id="btn-pause" class="hud-btn" aria-label="Pause">⏸</button>
+      <button id="btn-settings" class="hud-btn" aria-label="Settings">⚙</button>
+    </div>
+
+    <div id="depth-indicator" class="hud-panel">Depth <span id="depth-value">0</span>ft</div>
+  </div>
+
+  <!-- Start screen -->
+  <div id="start-screen" class="overlay">
+    <div class="overlay-card">
+      <h1>🐹 Hole Mole</h1>
+      <p>Dig, climb, and munch your way through the dirt.</p>
+      <button id="btn-play" class="big-btn">Play</button>
+      <div class="controls-hint">
+        <p><strong>Mobile:</strong> drag / swipe to move &amp; dig, tap to nudge.</p>
+        <p><strong>Desktop:</strong> arrow keys / WASD, or click &amp; drag.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pause overlay -->
+  <div id="pause-screen" class="overlay hidden">
+    <div class="overlay-card">
+      <h2>Paused</h2>
+      <button id="btn-resume" class="big-btn">Resume</button>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-screen" class="overlay hidden">
+    <div class="overlay-card">
+      <h2>Settings</h2>
+      <label class="settings-row">
+        <span>Sound</span>
+        <input type="checkbox" id="chk-sound" checked />
+      </label>
+      <label class="settings-row">
+        <span>Control scheme</span>
+        <select id="sel-controls">
+          <option value="drag">Drag / Swipe</option>
+          <option value="tap">Tap to move</option>
+        </select>
+      </label>
+      <button id="btn-restart" class="big-btn secondary">Restart Game</button>
+      <button id="btn-close-settings" class="big-btn">Close</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
