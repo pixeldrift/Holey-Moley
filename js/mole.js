@@ -33,12 +33,13 @@ export class Mole {
     return this.actionTarget !== null;
   }
 
-  /** Request movement in a grid direction. Ignored if already mid-action, asleep, or direction invalid. */
+  /** Request movement in a grid direction (8-way - diagonals dig/walk/climb too). */
   requestMove(dx, dy) {
     if (this.state === "sleep") return;
     if (this.isBusy) return;
+    dx = Math.sign(dx);
+    dy = Math.sign(dy);
     if (dx === 0 && dy === 0) return;
-    if (dx !== 0) dy = 0; // cardinal only, prioritize horizontal if diagonal sneaks in
 
     const targetCol = this.col + dx;
     const targetRow = this.row + dy;
@@ -48,6 +49,11 @@ export class Mole {
     if (dx > 0) this.facing = "right";
     if (dx < 0) this.facing = "left";
 
+    // Diagonal moves cover sqrt(2) the distance of an orthogonal one - scale the travel
+    // time to match so diagonal digging/walking doesn't look like it's teleporting.
+    const isDiagonal = dx !== 0 && dy !== 0;
+    const distanceScale = isDiagonal ? Math.SQRT2 : 1;
+
     const targetTile = this.map.getTile(targetCol, targetRow);
 
     if (targetTile.solid) {
@@ -55,13 +61,13 @@ export class Mole {
         this._bump();
         return;
       }
-      this._beginAction(MOVE_ACTION.DIG, targetCol, targetRow, targetTile.digDuration, targetTile.digEnergyCost, targetTile);
+      this._beginAction(MOVE_ACTION.DIG, targetCol, targetRow, targetTile.digDuration * distanceScale, targetTile.digEnergyCost, targetTile);
       return;
     }
 
-    // Open space: climbing if vertical move, walking if horizontal.
+    // Open space: climbing if there's any vertical component (includes diagonals), walking if purely horizontal.
     const isVertical = dy !== 0;
-    const duration = isVertical ? CLIMB_DURATION : WALK_DURATION;
+    const duration = (isVertical ? CLIMB_DURATION : WALK_DURATION) * distanceScale;
     const cost = isVertical ? ENERGY.CLIMB_COST : ENERGY.WALK_COST;
     this._beginAction(isVertical ? MOVE_ACTION.CLIMB : MOVE_ACTION.WALK, targetCol, targetRow, duration, cost, targetTile);
   }
@@ -214,8 +220,11 @@ export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
   ctx.translate(screenX + tileSize / 2 + bump * -flip, screenY + tileSize / 2);
 
   const isVertical = mole.actionType === MOVE_ACTION.CLIMB;
-  if (isVertical) {
-    ctx.rotate(mole.py < mole.row || (mole.actionTarget && mole.actionTarget.row < mole.row) ? -Math.PI / 2 : Math.PI / 2);
+  if (isVertical && mole.actionTarget) {
+    const goingUp = mole.actionTarget.row < mole.row;
+    const fullTilt = goingUp ? -Math.PI / 2 : Math.PI / 2;
+    const isDiagonal = mole.actionTarget.col !== mole.col;
+    ctx.rotate(isDiagonal ? fullTilt / 2 : fullTilt);
   }
   ctx.scale(flip, 1);
 

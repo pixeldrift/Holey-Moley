@@ -135,6 +135,26 @@ export class Game {
     const smoothing = 1 - Math.pow(0.001, dt / 1000);
     this.camera.x += (targetX - this.camera.x) * smoothing;
     this.camera.y += (targetY - this.camera.y) * smoothing;
+    this._clampCamera();
+  }
+
+  // Keeps the viewport from ever showing past the world's edges. The camera just stops
+  // moving once it hits a bound - it isn't "stuck", it resumes following the moment the
+  // mole heads back the other way, since the lerp target will fall back inside the clamp.
+  _clampCamera() {
+    const worldW = this.map.width * TILE_SIZE;
+    const worldH = this.map.height * TILE_SIZE;
+    const halfW = this.viewW / 2;
+    const halfH = this.viewH / 2;
+
+    this.camera.x = worldW <= this.viewW
+      ? worldW / 2
+      : Math.min(Math.max(this.camera.x, halfW), worldW - halfW);
+
+    const maxCameraY = worldH - halfH;
+    if (maxCameraY > 0) {
+      this.camera.y = Math.min(this.camera.y, maxCameraY);
+    }
   }
 
   _render(now) {
