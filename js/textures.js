@@ -187,30 +187,33 @@ function mulberry32(seed) {
   };
 }
 
-// Every sprite is exactly one 64x64 cell from the sheet's own grid, so "above ground" pieces
-// (tree/bush/flower tops) draw as a single full tile directly above the surface row, and
-// "below ground" pieces (flower/carrot roots) draw as a single full tile in the surface row
-// itself - two plain adjacent tiles meeting exactly at the ground line, no scaling or
-// fractional anchoring needed.
+// Every sprite is exactly one 64x64 cell from the sheet's own grid, and the sheet's own rows
+// line up with the terrain's rows: sheet row0 (grass) is the same row as the SURFACE tile,
+// sheet row1 (sand) is the same row as the first DIRT tile below it. So an "above ground"
+// piece (tree/bush/flower top) draws in the surface row's own cell - same as the grass tile
+// underneath it - and a "below ground" piece (flower/carrot root) draws one row down, in the
+// first dirt row's cell, matching where the actual food tile lives (see tiles.js
+// getRootVeggieGreensType, which reads surfaceRow+1). Two plain adjacent tiles meeting
+// exactly at the ground line, no scaling or fractional anchoring needed.
 function _drawTile(ctx, img, px, py, tileSize) {
   ctx.drawImage(img, px, py, tileSize, tileSize);
 }
 
 function _drawTreeBase(ctx, col, px, py, tileSize) {
-  _drawTile(ctx, sprites.treeTrunk, px, py - tileSize, tileSize);
+  _drawTile(ctx, sprites.treeTrunk, px, py, tileSize);
 }
 
 function _drawBush(ctx, col, px, py, tileSize) {
   const rng = mulberry32(col * 7639 + 11);
   const img = bushSprites[Math.floor(rng() * bushSprites.length)];
-  _drawTile(ctx, img, px, py - tileSize, tileSize);
+  _drawTile(ctx, img, px, py, tileSize);
 }
 
 function _drawFlower(ctx, col, px, py, tileSize) {
   const rng = mulberry32(col * 26113 + 5);
   const spec = flowerSprites[Math.floor(rng() * flowerSprites.length)];
-  _drawTile(ctx, spec.top, px, py - tileSize, tileSize);
-  if (spec.root) _drawTile(ctx, spec.root, px, py, tileSize);
+  _drawTile(ctx, spec.top, px, py, tileSize);
+  if (spec.root) _drawTile(ctx, spec.root, px, py + tileSize, tileSize);
 }
 
 const VEGGIE_TINT = {
@@ -252,11 +255,11 @@ function _getVeggieTiles(veggieType) {
 }
 
 // The carrot's greens (top) and body (root) are two plain adjacent tiles, same as the rooted
-// flowers - greens above the ground line, body filling the surface row cell below it.
+// flowers - greens in the surface row cell, body one row down where the food tile actually is.
 function _drawVeggieGreens(ctx, col, px, py, tileSize, veggieType) {
   const tiles = _getVeggieTiles(veggieType);
-  _drawTile(ctx, tiles.top, px, py - tileSize, tileSize);
-  _drawTile(ctx, tiles.root, px, py, tileSize);
+  _drawTile(ctx, tiles.top, px, py, tileSize);
+  _drawTile(ctx, tiles.root, px, py + tileSize, tileSize);
 }
 
 /** Big soft rolling hill silhouette drawn once behind the surface row - pure ambiance, no gameplay meaning. */

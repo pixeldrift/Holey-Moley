@@ -1,8 +1,13 @@
-// Living food: worms wander freely through solid dirt and open tunnels alike. Ants,
-// termites and beetles are surface walkers - they're only ever on an open cell that has
-// solid floor beneath it (the original ground surface, or the floor of a tunnel the mole
-// has dug). Ants additionally chase the mole down a shared row and attack on contact;
-// everything else is harmless and just gets eaten when the mole walks/digs into its cell.
+// Living food: worms wander freely through solid dirt and open tunnels alike. Ants cling to
+// whatever solid surface they're walking along - the original ground, or the floor/wall/
+// ceiling of a tunnel the mole has dug - and reorient themselves to match it, the same way a
+// real ant can walk up a wall. They chase the mole down a shared row and attack on contact
+// when they have normal footing; everything else is harmless and just gets eaten when the
+// mole walks/digs into its cell.
+//
+// Termites and beetles are temporarily disabled (not spawned) while the ant wall-following
+// behavior above is being worked out - their stats/drawing code is left in place to re-enable
+// later.
 
 import { TILE } from "./tiles.js";
 import { FOOD_TYPES, CREATURE_STATS } from "./constants.js";
@@ -37,6 +42,17 @@ class Creature {
     // Worms are built from a head + tail + 0-3 repeated middle segments, so they come out
     // in a few different lengths instead of always looking identical.
     this.wormMiddleSegments = type === "WORM" ? Math.floor(Math.random() * 4) : 0;
+
+    // Ants cling to whatever surface they're walking on rather than always walking
+    // horizontally on a floor. wallD{x,y} is the unit vector from the ant to the solid
+    // neighbor it's standing on (0,1 = normal floor); travelD{x,y} is perpendicular to that,
+    // the direction it's currently walking along that surface.
+    if (type === "ANT") {
+      this.wallDx = 0;
+      this.wallDy = 1;
+      this.travelDx = this.facing;
+      this.travelDy = 0;
+    }
   }
 }
 
@@ -45,6 +61,9 @@ function randomBetween(a, b) {
 }
 
 const ANT_SPAWN_EXCLUSION = 7; // tiles from the mole's start column ants won't spawn within
+const ANT_SURFACE_TURN_CHANCE = 0.1; // ~1-in-10 chance per tile to turn back while on open ground
+const ANT_CORNER_TURN_CHANCE = 0.25; // chance to turn back instead of following a tunnel corner
+const ANT_OFFSCREEN_MARGIN = 10; // tiles beyond the mole's column considered safely offscreen
 
 export class CreatureManager {
   constructor(map, moleStartCol) {
@@ -60,15 +79,13 @@ export class CreatureManager {
       const row = map.surfaceRow + 2 + Math.floor(Math.random() * 10);
       if (map.getTile(col, row) !== TILE.ROCK) this._add("WORM", col, row);
     }
-    const surfaceCounts = { ANT: CREATURE_STATS.ANT.cap, TERMITE: CREATURE_STATS.TERMITE.cap, BEETLE: CREATURE_STATS.BEETLE.cap };
-    for (const [type, count] of Object.entries(surfaceCounts)) {
-      for (let i = 0; i < count; i++) {
-        let col;
-        do {
-          col = Math.floor(Math.random() * map.width);
-        } while (type === "ANT" && Math.abs(col - moleStartCol) < ANT_SPAWN_EXCLUSION);
-        this._add(type, col, map.surfaceRow);
-      }
+    // A few ants on the surface to start - TERMITE/BEETLE are disabled for now (see doc comment).
+    for (let i = 0; i < CREATURE_STATS.ANT.cap; i++) {
+      let col;
+      do {
+        col = Math.floor(Math.random() * map.width);
+      } while (Math.abs(col - moleStartCol) < ANT_SPAWN_EXCLUSION);
+      this._add("ANT", col, map.surfaceRow);
     }
   }
 
@@ -101,7 +118,7 @@ export class CreatureManager {
       if (!this.list[i].alive) this.list.splice(i, 1);
     }
 
-    this._maybeRespawn();
+    this._maybeRespawn(mole);
   }
 
   _resolveMoleContact(mole, onMoleEat) {
@@ -192,17 +209,20 @@ export class CreatureManager {
     this._beginStep(c, nc, nr, stats.moveIntervalMs);
   }
 
+  // Chasing only happens with normal footing (wall directly below) - an ant mid-climb on a
+  // wall or ceiling just keeps following that surface instead.
   _stepAnt(c, mole, onMoleHurt) {
     const stats = CREATURE_STATS.ANT;
+    const normalFooting = c.wallDx === 0 && c.wallDy === 1;
     const sameRow = c.row === mole.row;
     const dist = Math.abs(c.col - mole.col);
 
-    if (sameRow && dist <= stats.detectRange && dist > 0) {
+    if (normalFooting && sameRow && dist <= stats.detectRange && dist > 0) {
       const dir = mole.col > c.col ? 1 : -1;
       const nc = c.col + dir;
       const nr = c.row;
       if (nc === mole.col && nr === mole.row) {
-        c.facing = dir;
+        c.travelDx = dir;
         c._fromCol = c.col; c._fromRow = c.row;
         c._toCol = nc; c._toRow = nr;
         c._elapsed = 0; c._duration = STEP_DURATION; c.isBusy = true;
@@ -211,11 +231,104 @@ export class CreatureManager {
         return;
       }
       if (this._canWalkFloor(nc, nr)) {
+        c.travelDx = dir;
         this._beginStep(c, nc, nr, stats.chaseIntervalMs);
         return;
       }
     }
-    this._stepSurfaceBug(c, mole);
+
+    if (normalFooting && c.row === this.map.surfaceRow) {
+      this._stepAntSurface(c);
+    } else {
+      this._stepAntTunnel(c);
+    }
+  }
+
+  // Walking the original top-of-world ground: ambles left/right, occasionally changes its
+  // mind at random (~1 in 10 tiles), and on finding a hole in the ground ahead either turns
+  // back or commits to climbing down into it, 50/50.
+  _stepAntSurface(c) {
+    const stats = CREATURE_STATS.ANT;
+    const map = this.map;
+
+    if (Math.random() < ANT_SURFACE_TURN_CHANCE) {
+      c.travelDx *= -1;
+    }
+
+    const nc = c.col + c.travelDx;
+    if (!map.inBounds(nc, c.row)) {
+      c.travelDx *= -1;
+      c._waitTimer = stats.moveIntervalMs * 0.4;
+      return;
+    }
+
+    if (!map.hasFloorBelow(nc, c.row)) {
+      if (Math.random() < 0.5) {
+        c.travelDx *= -1;
+        c._waitTimer = stats.moveIntervalMs * 0.4;
+        return;
+      }
+      // Commit to the hole: curl down into it - the direction it was walking becomes the new
+      // "down," and the wall it clings to is now behind it, on the side it approached from.
+      c.wallDx = -c.travelDx;
+      c.wallDy = 0;
+      c.travelDx = 0;
+      c.travelDy = 1;
+      this._beginStep(c, nc, c.row + 1, stats.moveIntervalMs);
+      return;
+    }
+
+    this._beginStep(c, nc, c.row, stats.moveIntervalMs);
+  }
+
+  // Generic wall-following, valid regardless of which surface (floor/wall/ceiling) the ant is
+  // currently clinging to: keep walking while the wall continues, and treat both "wall blocks
+  // the path ahead" (concave corner) and "wall drops away at an edge" (convex corner) as
+  // corner events with the same turn-around-or-follow odds.
+  _stepAntTunnel(c) {
+    const map = this.map;
+    const stats = CREATURE_STATS.ANT;
+    const isSolid = (x, y) => map.getTile(x, y).solid;
+
+    const aheadX = c.col + c.travelDx, aheadY = c.row + c.travelDy;
+
+    if (isSolid(aheadX, aheadY)) {
+      // Concave corner: the wall turns to block the path ahead.
+      if (Math.random() < ANT_CORNER_TURN_CHANCE) {
+        c.travelDx *= -1;
+        c.travelDy *= -1;
+      } else {
+        const newWallDx = c.travelDx, newWallDy = c.travelDy;
+        c.travelDx = -c.wallDx;
+        c.travelDy = -c.wallDy;
+        c.wallDx = newWallDx;
+        c.wallDy = newWallDy;
+      }
+      c._waitTimer = stats.moveIntervalMs * 0.4;
+      return;
+    }
+
+    const wallAheadX = aheadX + c.wallDx, wallAheadY = aheadY + c.wallDy;
+    if (!isSolid(wallAheadX, wallAheadY)) {
+      // Convex corner: the wall it was hugging drops away at an edge.
+      if (Math.random() < ANT_CORNER_TURN_CHANCE) {
+        c.travelDx *= -1;
+        c.travelDy *= -1;
+        c._waitTimer = stats.moveIntervalMs * 0.4;
+        return;
+      }
+      const newWallDx = -c.travelDx, newWallDy = -c.travelDy;
+      const newTravelDx = c.wallDx, newTravelDy = c.wallDy;
+      c.wallDx = newWallDx;
+      c.wallDy = newWallDy;
+      c.travelDx = newTravelDx;
+      c.travelDy = newTravelDy;
+      this._beginStep(c, wallAheadX, wallAheadY, stats.moveIntervalMs);
+      return;
+    }
+
+    // Flat stretch of wall - keep walking.
+    this._beginStep(c, aheadX, aheadY, stats.moveIntervalMs);
   }
 
   /** Call after ant step animations complete to resolve any pending bite. */
@@ -233,12 +346,13 @@ export class CreatureManager {
     }
   }
 
-  _maybeRespawn() {
+  _maybeRespawn(mole) {
     this._respawnAcc = (this._respawnAcc || 0) + 1;
     if (this._respawnAcc < 240) return; // roughly every few seconds at 60fps-ish ticks
     this._respawnAcc = 0;
 
-    for (const type of ["WORM", "ANT", "TERMITE", "BEETLE"]) {
+    // TERMITE/BEETLE are disabled for now (see module doc comment).
+    for (const type of ["WORM", "ANT"]) {
       const stats = CREATURE_STATS[type];
       if (this._countAlive(type) >= stats.cap) continue;
       if (type === "WORM") {
@@ -247,14 +361,18 @@ export class CreatureManager {
         const tile = this.map.getTile(col, row);
         if (tile !== TILE.ROCK && tile !== TILE.SKY) this._add(type, col, row);
       } else {
-        // Spawn onto any currently-valid floor cell (surface row always qualifies).
-        for (let attempt = 0; attempt < 12; attempt++) {
-          const col = Math.floor(Math.random() * this.map.width);
-          const row = this.map.surfaceRow;
-          if (this._canWalkFloor(col, row)) {
-            this._add(type, col, row);
-            break;
-          }
+        // Ants spawn just off one side of the screen and walk in, rather than popping into
+        // view - pick a column safely beyond the mole's (camera stays centered on it).
+        const side = Math.random() < 0.5 ? -1 : 1;
+        const col = Math.max(0, Math.min(
+          this.map.width - 1,
+          mole.col + side * (ANT_OFFSCREEN_MARGIN + Math.floor(Math.random() * 5))
+        ));
+        const row = this.map.surfaceRow;
+        if (this._canWalkFloor(col, row)) {
+          const c = this._add(type, col, row);
+          c.travelDx = -side; // walk inward, toward the visible area
+          c.facing = c.travelDx;
         }
       }
     }
@@ -279,6 +397,22 @@ function lerp(a, b, t) {
 // Rendering - small, readable silhouettes for each critter type.
 // ---------------------------------------------------------------------------
 
+// Ants, termites, and beetles are floor-walkers (see the module doc comment above) - anchor
+// their feet to the bottom of their current cell instead of centering them in it, or their
+// small silhouettes float well above the visible ground line the way the mole's much bigger
+// legs don't. Each offset is the lowest point that type's own draw function reaches below its
+// own local origin (leg tips / body-ellipse bottom), at s=1 (48px tile).
+const FOOT_OFFSET = { ANT: 5, TERMITE: 4, BEETLE: 5 };
+
+// Rotation that puts local "down" (feet) onto the wall the ant is clinging to, keyed by
+// wallDx,wallDy. Derived from rotate(0,1,angle) = wallSide for each of the 4 cardinal cases.
+const ANT_WALL_ANGLE = {
+  "0,1": 0, // normal floor
+  "1,0": -Math.PI / 2, // right-hand wall
+  "0,-1": Math.PI, // ceiling
+  "-1,0": Math.PI / 2, // left-hand wall
+};
+
 export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   const t = nowMs / 1000;
   const s = tileSize / 48;
@@ -287,16 +421,26 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
 
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.scale(c.facing, 1);
 
-  if (c.type === "WORM") {
-    drawWorm(ctx, s, t, c.wormMiddleSegments);
-  } else if (c.type === "ANT") {
+  if (c.type === "ANT") {
+    ctx.rotate(ANT_WALL_ANGLE[`${c.wallDx},${c.wallDy}`] ?? 0);
+    // Flip so the ant visually walks the direction it's actually traveling, whichever surface
+    // it's currently on - "local right" (unflipped) is the wall direction rotated 90deg CCW.
+    const localRightDx = c.wallDy, localRightDy = -c.wallDx;
+    const flip = (c.travelDx === localRightDx && c.travelDy === localRightDy) ? 1 : -1;
+    ctx.scale(flip, 1);
+    ctx.translate(0, tileSize / 2 - FOOT_OFFSET.ANT * s);
     drawAnt(ctx, s, t, c.isBusy);
-  } else if (c.type === "TERMITE") {
-    drawTermite(ctx, s, t, c.isBusy);
-  } else if (c.type === "BEETLE") {
-    drawBeetle(ctx, s, t, c.isBusy);
+  } else if (c.type === "WORM") {
+    drawWorm(ctx, s, t, c.wormMiddleSegments);
+  } else {
+    // Termites/beetles are currently disabled (not spawned) but keep their floor-anchored
+    // rendering intact for when they're re-enabled.
+    const footOffset = FOOT_OFFSET[c.type];
+    if (footOffset != null) ctx.translate(0, tileSize / 2 - footOffset * s);
+    ctx.scale(c.facing, 1);
+    if (c.type === "TERMITE") drawTermite(ctx, s, t, c.isBusy);
+    else if (c.type === "BEETLE") drawBeetle(ctx, s, t, c.isBusy);
   }
 
   ctx.restore();
