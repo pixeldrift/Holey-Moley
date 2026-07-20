@@ -2,7 +2,8 @@
 // color choice. Survives restarts via localStorage so upgrades feel like progress, not
 // just a per-run score.
 
-const STORAGE_KEY = "holemole:profile:v1";
+const STORAGE_KEY = "holeymoley:profile:v1";
+const LEGACY_STORAGE_KEY = "holemole:profile:v1"; // pre-rename key, migrated on first load
 
 export const STAT_MAX_LEVEL = 5;
 
@@ -31,7 +32,17 @@ function defaultData() {
 
 function load() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    let raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      // First load after the Hole Mole -> Holey Moley rename - carry over any existing
+      // progress instead of silently resetting it, then drop the old key.
+      const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+      if (legacy) {
+        localStorage.setItem(STORAGE_KEY, legacy);
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
+        raw = legacy;
+      }
+    }
     if (raw) return { ...defaultData(), ...JSON.parse(raw) };
   } catch (e) {
     // localStorage unavailable (private mode, etc) - fall back to an in-memory default.
