@@ -304,25 +304,29 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
 
 // Built from a head + 0-3 repeated middle segments + tail, always laid out head-on-the-left
 // to tail-on-the-right (matching the sheet's own col4=head..col6=tail ordering) - gives worms
-// a few different lengths instead of one fixed sprite.
+// a few different lengths instead of one fixed sprite. Every segment (head and tail included)
+// shares one continuous sine, offset by its position along the body, so the wiggle reads as a
+// single peristaltic wave rolling from head to tail rather than independently-bobbing pieces.
+const WORM_WAVE_SPEED = 6;
+const WORM_WAVE_PHASE_PER_SEGMENT = 0.9;
+const WORM_WAVE_AMPLITUDE = 1.8;
+
 function drawWorm(ctx, s, t, middleSegments) {
   if (!wormSegmentSprites) return;
   const { head, mid, tail } = wormSegmentSprites;
   const tileSize = s * 48;
-  const wiggle = Math.sin(t * 6) * 1.5 * s;
-  const totalW = tileSize * (2 + middleSegments);
+  const totalSegments = 2 + middleSegments;
+  const totalW = tileSize * totalSegments;
 
   ctx.save();
   ctx.rotate(Math.sin(t * 4) * 0.05);
   let x = -totalW / 2;
-  ctx.drawImage(head, x, -tileSize / 2 + wiggle, tileSize, tileSize);
-  x += tileSize;
-  for (let i = 0; i < middleSegments; i++) {
-    const localWiggle = Math.sin(t * 6 + i * 1.3) * 1.5 * s;
-    ctx.drawImage(mid, x, -tileSize / 2 + localWiggle, tileSize, tileSize);
+  for (let i = 0; i < totalSegments; i++) {
+    const img = i === 0 ? head : i === totalSegments - 1 ? tail : mid;
+    const wave = Math.sin(t * WORM_WAVE_SPEED - i * WORM_WAVE_PHASE_PER_SEGMENT) * WORM_WAVE_AMPLITUDE * s;
+    ctx.drawImage(img, x, -tileSize / 2 + wave, tileSize, tileSize);
     x += tileSize;
   }
-  ctx.drawImage(tail, x, -tileSize / 2 + wiggle, tileSize, tileSize);
   ctx.restore();
 }
 
