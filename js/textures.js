@@ -1,142 +1,45 @@
-// Procedural terrain textures.
-//
-// There's no image-generation tool in this pipeline, so "photo-realistic" isn't literally
-// achievable - what this module does instead is build richly mottled, non-repeating-looking
-// material textures out of layered noise blobs (rendered once to offscreen canvases), then
-// sample them per-tile with a randomized crop/rotation so adjacent same-type tiles don't look
-// stamped. Material boundaries get a soft gradient "melt" instead of a hard edge, and tile
-// draws are pixel-rounded + slightly overdrawn so there are no seam/grid-line artifacts.
+// Terrain and scenery rendering, built from the "Holey Moley Spritesheet.png" art (see
+// assets/ for the individually-cut pieces). Each terrain material has several independently
+// tileable 64x64 variants straight from the sheet - no blur, no stretching, just a random
+// pick per grid cell (deterministic by position, so it doesn't shimmer frame to frame).
+// Must call initTextures(sprites) once (with assets.js's loaded images) before any
+// drawTerrainTile call.
 
 import { TILE, CORNER } from "./tiles.js";
 
-const SWATCH_SIZE = 160;
+let sprites = null;
+let materials = null; // { grass: [img,img,img,img], sand: [...], ... }
+let flowerSprites = null;
+let bushSprites = null;
 
-const PALETTES = {
-  DIRT_SOFT: { base: "#8a5a34", dark: "#6e4527", light: "#a06f45", fleck: "#563a20" },
-  DIRT_MEDIUM: { base: "#77492b", dark: "#5c3620", light: "#8c5c38", fleck: "#452c18" },
-  DIRT_HARD: { base: "#5f3a22", dark: "#472a18", light: "#734830", fleck: "#33200f" },
-  ROOT: { base: "#8a5a34", dark: "#6e4527", light: "#a06f45", fleck: "#c99a53" },
-  ROCK: { base: "#787878", dark: "#5c5c5c", light: "#949494", fleck: "#484848" },
-  SURFACE: { base: "#5fa832", dark: "#4c8a27", light: "#7bc94a", fleck: "#3f7020" },
-  TUNNEL: { base: "#241a12", dark: "#160f0a", light: "#31241a", fleck: "#0f0a06" },
+const MATERIAL_FOR_TILE = {
+  SURFACE: "grass",
+  DIRT_SOFT: "sand",
+  DIRT_MEDIUM: "soil",
+  DIRT_HARD: "dirt",
+  ROOT: "gravel",
+  ROCK: "rock",
 };
 
-const AVG_COLOR = {
-  DIRT_SOFT: "#835435", DIRT_MEDIUM: "#6f4529", DIRT_HARD: "#583621",
-  ROOT: "#8a5a34", ROCK: "#787878",
-};
-
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+export function initTextures(loadedSprites) {
+  sprites = loadedSprites;
+  materials = {
+    grass: sprites.terrainGrass,
+    sand: sprites.terrainSand,
+    soil: sprites.terrainSoil,
+    dirt: sprites.terrainDirt,
+    gravel: sprites.terrainGravel,
+    rock: sprites.terrainRock,
   };
-}
-
-// Draws at (x,y) plus every wrapped copy that could bleed into the [0,SWATCH_SIZE) canvas,
-// so the resulting unit tiles perfectly with itself - no seam when it repeats.
-function wrapDraw(x, y, margin, draw) {
-  for (const ox of [-SWATCH_SIZE, 0, SWATCH_SIZE]) {
-    for (const oy of [-SWATCH_SIZE, 0, SWATCH_SIZE]) {
-      const ex = x + ox, ey = y + oy;
-      if (ex > -margin && ex < SWATCH_SIZE + margin && ey > -margin && ey < SWATCH_SIZE + margin) {
-        draw(ex, ey);
-      }
-    }
-  }
-}
-
-function buildSwatch(palette, seed, rocky) {
-  const c = document.createElement("canvas");
-  c.width = SWATCH_SIZE;
-  c.height = SWATCH_SIZE;
-  const ctx = c.getContext("2d");
-  const rng = mulberry32(seed);
-
-  ctx.fillStyle = palette.base;
-  ctx.fillRect(0, 0, SWATCH_SIZE, SWATCH_SIZE);
-
-  // Layered soft blobs for organic mottling. Wrapped so the unit tiles seamlessly.
-  const blobCount = rocky ? 14 : 26;
-  for (let i = 0; i < blobCount; i++) {
-    const x = rng() * SWATCH_SIZE;
-    const y = rng() * SWATCH_SIZE;
-    const r = (rocky ? 14 + rng() * 30 : 8 + rng() * 22);
-    const shade = rng() < 0.5 ? palette.dark : palette.light;
-    wrapDraw(x, y, r, (ex, ey) => {
-      const grad = ctx.createRadialGradient(ex, ey, 0, ex, ey, r);
-      grad.addColorStop(0, hexAlpha(shade, rocky ? 0.35 : 0.22));
-      grad.addColorStop(1, hexAlpha(shade, 0));
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(ex, ey, r, 0, Math.PI * 2);
-      ctx.fill();
-    });
-  }
-
-  // Fine grit flecks.
-  ctx.fillStyle = palette.fleck;
-  const fleckCount = rocky ? 40 : 70;
-  for (let i = 0; i < fleckCount; i++) {
-    const x = rng() * SWATCH_SIZE;
-    const y = rng() * SWATCH_SIZE;
-    const size = 1 + rng() * (rocky ? 3 : 2);
-    ctx.globalAlpha = 0.35 + rng() * 0.35;
-    wrapDraw(x, y, size, (ex, ey) => ctx.fillRect(ex, ey, size, size));
-  }
-  ctx.globalAlpha = 1;
-
-  // Subtle sedimentary striations - periodic in x already, so they wrap on their own.
-  if (!rocky) {
-    ctx.strokeStyle = hexAlpha(palette.dark, 0.15);
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < 4; i++) {
-      const y = rng() * SWATCH_SIZE;
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      for (let x = 0; x <= SWATCH_SIZE; x += 20) {
-        ctx.lineTo(x, y + Math.sin((x / SWATCH_SIZE) * Math.PI * 2 + i) * 4);
-      }
-      ctx.stroke();
-    }
-  }
-
-  // Tile the seamless unit 2x2 so any tileSize-wide crop starting anywhere within
-  // [0, SWATCH_SIZE) never runs off the edge of the canvas.
-  const field = document.createElement("canvas");
-  field.width = SWATCH_SIZE * 2;
-  field.height = SWATCH_SIZE * 2;
-  const fctx = field.getContext("2d");
-  for (const ox of [0, SWATCH_SIZE]) {
-    for (const oy of [0, SWATCH_SIZE]) {
-      fctx.drawImage(c, ox, oy);
-    }
-  }
-  return field;
-}
-
-function hexAlpha(hex, alpha) {
-  const n = parseInt(hex.slice(1), 16);
-  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  return `rgba(${r},${g},${b},${alpha})`;
-}
-
-let swatches = null;
-function getSwatches() {
-  if (swatches) return swatches;
-  swatches = {
-    DIRT_SOFT: buildSwatch(PALETTES.DIRT_SOFT, 101, false),
-    DIRT_MEDIUM: buildSwatch(PALETTES.DIRT_MEDIUM, 202, false),
-    DIRT_HARD: buildSwatch(PALETTES.DIRT_HARD, 303, false),
-    ROOT: buildSwatch(PALETTES.ROOT, 404, false),
-    ROCK: buildSwatch(PALETTES.ROCK, 505, true),
-    SURFACE: buildSwatch(PALETTES.SURFACE, 101, false),
-    TUNNEL: buildSwatch(PALETTES.TUNNEL, 606, true),
-  };
-  return swatches;
+  // daisy_yellow is a single tile with no exposed roots; the other three are a top+root
+  // pair of tiles, same shape as the carrot below.
+  flowerSprites = [
+    { top: sprites.flowerDaisyYellow, root: null },
+    { top: sprites.flowerConeflowerTop, root: sprites.flowerConeflowerRoot },
+    { top: sprites.flowerDaisyWhiteTop, root: sprites.flowerDaisyWhiteRoot },
+    { top: sprites.flowerBellflowerTop, root: sprites.flowerBellflowerRoot },
+  ];
+  bushSprites = [sprites.bushDark, sprites.bushFlowering];
 }
 
 function hashTile(col, row) {
@@ -146,51 +49,54 @@ function hashTile(col, row) {
   return h;
 }
 
-const BLENDABLE = new Set(["DIRT_SOFT", "DIRT_MEDIUM", "DIRT_HARD", "ROOT", "ROCK"]);
+function pickVariant(variants, col, row, salt = 0) {
+  return variants[(hashTile(col, row) + salt) % variants.length];
+}
 
-/** Draws one terrain tile: base texture crop, then soft edge-blend toward differing neighbors. */
+/** Draws one terrain tile: a randomly-picked variant of its material, full stop - no
+ *  blending, no softened edges between neighbors, just the sheet's own tile art. */
 export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
-  const swatches = getSwatches();
-  const swatch = swatches[tile.id];
   const px = Math.round(x);
   const py = Math.round(y);
-  const overdraw = tileSize + 1;
 
-  const cornerCut = tile.diggable ? map.getCornerCut(col, row) : CORNER.NONE;
-  if (cornerCut !== CORNER.NONE) {
-    _drawDiagonalTile(ctx, swatches, swatch, cornerCut, col, row, px, py, tileSize, overdraw);
+  if (tile === TILE.TUNNEL) {
+    _drawTunnel(ctx, col, row, px, py, tileSize);
     return;
   }
 
-  if (swatch) {
-    // Sample using continuous world-space coordinates (not a per-tile random crop) so the
-    // texture flows unbroken from one tile into the next instead of looking patchworked.
-    const sx = ((col * tileSize) % SWATCH_SIZE + SWATCH_SIZE) % SWATCH_SIZE;
-    const sy = ((row * tileSize) % SWATCH_SIZE + SWATCH_SIZE) % SWATCH_SIZE;
-    ctx.drawImage(swatch, sx, sy, tileSize, tileSize, px, py, overdraw, overdraw);
+  const material = MATERIAL_FOR_TILE[tile.id];
+  const variants = material ? materials[material] : null;
+
+  const cornerCut = tile.diggable ? map.getCornerCut(col, row) : CORNER.NONE;
+  if (cornerCut !== CORNER.NONE) {
+    _drawDiagonalTile(ctx, variants, col, row, cornerCut, px, py, tileSize);
+    return;
+  }
+
+  if (variants) {
+    ctx.drawImage(pickVariant(variants, col, row), px, py, tileSize, tileSize);
   } else {
     ctx.fillStyle = tile.color || "#000";
-    ctx.fillRect(px, py, overdraw, overdraw);
+    ctx.fillRect(px, py, tileSize, tileSize);
   }
 
   if (tile === TILE.ROOT) {
-    const h = hashTile(col, row);
-    const wobble = ((h % 7) - 3) * 3;
-    ctx.strokeStyle = "rgba(201,154,83,0.8)";
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(px + 4, py + tileSize / 2);
-    ctx.lineTo(px + tileSize - 4, py + tileSize / 2 + wobble);
-    ctx.stroke();
+    const overlay = pickVariant(sprites.rootOverlays, col, row, 7);
+    ctx.drawImage(overlay, px, py, tileSize, tileSize);
   }
+}
 
-  if (BLENDABLE.has(tile.id)) {
-    _drawEdgeBlends(ctx, map, tile, col, row, px, py, tileSize);
-  }
-
-  if (tile === TILE.SURFACE) {
-    _drawGrassBlades(ctx, col, px, py, tileSize);
-    drawSurfaceDecoration(ctx, map, col, px, py, tileSize);
+// The sheet has no cave/tunnel art - a flat fill with a few crisp (unblurred) darker flecks,
+// deterministic per tile so it doesn't shimmer.
+function _drawTunnel(ctx, col, row, px, py, tileSize) {
+  ctx.fillStyle = "#241a12";
+  ctx.fillRect(px, py, tileSize, tileSize);
+  ctx.fillStyle = "#150e09";
+  const h = hashTile(col, row);
+  for (let i = 0; i < 4; i++) {
+    const fx = px + ((h >> (i * 4)) % 11) * (tileSize / 12) + 2;
+    const fy = py + ((h >> (i * 4 + 2)) % 11) * (tileSize / 12) + 2;
+    ctx.fillRect(fx, fy, 2, 2);
   }
 }
 
@@ -218,11 +124,11 @@ function _solidTrianglePoints(cornerCut, corners) {
 
 // Renders a tile that's had one triangular half opened up by a diagonal dig: fill the whole
 // cell as tunnel first (that becomes the open half), then clip to the remaining solid
-// triangle and paint the material texture only inside it - the boundary between the two
-// is a single straight 45 degree line, continuous with the neighboring tiles' own cuts.
-function _drawDiagonalTile(ctx, swatches, swatch, cornerCut, col, row, px, py, tileSize, overdraw) {
-  ctx.drawImage(swatches.TUNNEL, 0, 0, tileSize, tileSize, px, py, overdraw, overdraw);
-  if (!swatch) return;
+// triangle and paint the material there - the boundary is a single straight 45 degree line,
+// continuous with the neighboring tiles' own cuts.
+function _drawDiagonalTile(ctx, variants, col, row, cornerCut, px, py, tileSize) {
+  _drawTunnel(ctx, col, row, px, py, tileSize);
+  if (!variants) return;
 
   const corners = _tileCorners(px, py, tileSize);
   const points = _solidTrianglePoints(cornerCut, corners);
@@ -235,61 +141,8 @@ function _drawDiagonalTile(ctx, swatches, swatch, cornerCut, col, row, px, py, t
   ctx.lineTo(points[2][0], points[2][1]);
   ctx.closePath();
   ctx.clip();
-
-  const sx = ((col * tileSize) % SWATCH_SIZE + SWATCH_SIZE) % SWATCH_SIZE;
-  const sy = ((row * tileSize) % SWATCH_SIZE + SWATCH_SIZE) % SWATCH_SIZE;
-  ctx.drawImage(swatch, sx, sy, tileSize, tileSize, px, py, overdraw, overdraw);
+  ctx.drawImage(pickVariant(variants, col, row), px, py, tileSize, tileSize);
   ctx.restore();
-}
-
-function _drawEdgeBlends(ctx, map, tile, col, row, px, py, tileSize) {
-  const span = Math.max(10, tileSize * 0.4);
-  const dirs = [
-    { dx: 0, dy: -1, side: "top" },
-    { dx: 0, dy: 1, side: "bottom" },
-    { dx: -1, dy: 0, side: "left" },
-    { dx: 1, dy: 0, side: "right" },
-  ];
-  for (const d of dirs) {
-    const nt = map.getTile(col + d.dx, row + d.dy);
-    if (nt === tile || !BLENDABLE.has(nt.id)) continue;
-    const color = AVG_COLOR[nt.id];
-    if (!color) continue;
-
-    let grad;
-    if (d.side === "top") grad = ctx.createLinearGradient(0, py, 0, py + span);
-    else if (d.side === "bottom") grad = ctx.createLinearGradient(0, py + tileSize, 0, py + tileSize - span);
-    else if (d.side === "left") grad = ctx.createLinearGradient(px, 0, px + span, 0);
-    else grad = ctx.createLinearGradient(px + tileSize, 0, px + tileSize - span, 0);
-
-    grad.addColorStop(0, hexAlpha(color, 0.32));
-    grad.addColorStop(1, hexAlpha(color, 0));
-    ctx.fillStyle = grad;
-
-    if (d.side === "top") ctx.fillRect(px, py, tileSize, span);
-    else if (d.side === "bottom") ctx.fillRect(px, py + tileSize - span, tileSize, span);
-    else if (d.side === "left") ctx.fillRect(px, py, span, tileSize);
-    else ctx.fillRect(px + tileSize - span, py, span, tileSize);
-  }
-}
-
-// The surface tile is a full grass block now (not dirt with a thin cap) - these tufts just
-// give its top edge some texture, poking slightly above the tile boundary into the sky.
-function _drawGrassBlades(ctx, col, px, py, tileSize) {
-  const rng = mulberry32(col * 92821 + 17);
-  ctx.fillStyle = "#3f7020";
-  const bladeCount = 6;
-  for (let i = 0; i < bladeCount; i++) {
-    const bx = px + (i + 0.5) * (tileSize / bladeCount) + (rng() - 0.5) * 4;
-    const bh = tileSize * (0.14 + rng() * 0.12);
-    const lean = (rng() - 0.5) * 6;
-    ctx.beginPath();
-    ctx.moveTo(bx - 1.5, py);
-    ctx.quadraticCurveTo(bx + lean, py - bh * 0.6, bx + lean * 0.6, py - bh);
-    ctx.quadraticCurveTo(bx + lean, py - bh * 0.6, bx + 1.5, py);
-    ctx.closePath();
-    ctx.fill();
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +154,7 @@ function _drawGrassBlades(ctx, col, px, py, tileSize) {
 
 function drawSurfaceDecoration(ctx, map, col, px, py, tileSize) {
   const feature = map.surfaceFeatures?.[col];
-  if (feature?.type === "tree") _drawTreeBase(ctx, col, px, py, tileSize, feature.size);
+  if (feature?.type === "tree") _drawTreeBase(ctx, col, px, py, tileSize);
   else if (feature?.type === "bush") _drawBush(ctx, col, px, py, tileSize);
   else if (feature?.type === "flower") _drawFlower(ctx, col, px, py, tileSize);
 
@@ -309,109 +162,101 @@ function drawSurfaceDecoration(ctx, map, col, px, py, tileSize) {
   if (veggieType) _drawVeggieGreens(ctx, col, px, py, tileSize, veggieType);
 }
 
-const TREE_SIZES = {
-  small: { trunkW: 0.42, trunkH: 0.9, flare: 1.3 },
-  medium: { trunkW: 0.58, trunkH: 1.15, flare: 1.45 },
-  large: { trunkW: 0.78, trunkH: 1.4, flare: 1.6 },
-};
+/**
+ * Trees/bushes/flowers/veggie-greens draw well outside their own tile's cell - a tall tree
+ * or a carrot's root can reach into rows above or below the surface row. Since the terrain
+ * loop draws row by row top-to-bottom, anything drawn inline during the surface row's own
+ * pass would get painted over by the next row's tile fill. So these are drawn in a separate
+ * pass, after every visible terrain tile is down, layering cleanly on top of all of them.
+ */
+export function drawSurfaceDecorations(ctx, map, startCol, endCol, originX, originY, tileSize) {
+  const py = originY + map.surfaceRow * tileSize;
+  for (let col = startCol; col <= endCol; col++) {
+    const px = originX + col * tileSize;
+    drawSurfaceDecoration(ctx, map, col, px, py, tileSize);
+  }
+}
 
-function _drawTreeBase(ctx, col, px, py, tileSize, size) {
-  const rng = mulberry32(col * 51197 + 3);
-  const spec = TREE_SIZES[size] || TREE_SIZES.small;
-  const cx = px + tileSize / 2 + (rng() - 0.5) * tileSize * 0.15;
-  const w = tileSize * spec.trunkW;
-  const h = tileSize * spec.trunkH;
-  const flare = w * spec.flare;
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
-  ctx.fillStyle = "#5a4229";
-  ctx.beginPath();
-  ctx.moveTo(cx - flare / 2, py + tileSize * 0.1);
-  ctx.quadraticCurveTo(cx - w / 2, py - h * 0.3, cx - w / 2, py - h);
-  ctx.lineTo(cx + w / 2, py - h);
-  ctx.quadraticCurveTo(cx + w / 2, py - h * 0.3, cx + flare / 2, py + tileSize * 0.1);
-  ctx.closePath();
-  ctx.fill();
+// Every sprite is exactly one 64x64 cell from the sheet's own grid, so "above ground" pieces
+// (tree/bush/flower tops) draw as a single full tile directly above the surface row, and
+// "below ground" pieces (flower/carrot roots) draw as a single full tile in the surface row
+// itself - two plain adjacent tiles meeting exactly at the ground line, no scaling or
+// fractional anchoring needed.
+function _drawTile(ctx, img, px, py, tileSize) {
+  ctx.drawImage(img, px, py, tileSize, tileSize);
+}
 
-  ctx.strokeStyle = "rgba(0,0,0,0.18)";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(cx - w * 0.12, py - h * 0.15);
-  ctx.lineTo(cx - w * 0.12, py - h * 0.85);
-  ctx.stroke();
+function _drawTreeBase(ctx, col, px, py, tileSize) {
+  _drawTile(ctx, sprites.treeTrunk, px, py - tileSize, tileSize);
 }
 
 function _drawBush(ctx, col, px, py, tileSize) {
   const rng = mulberry32(col * 7639 + 11);
-  const cx = px + tileSize / 2;
-  const baseY = py + tileSize * 0.05;
-  ctx.fillStyle = "#3f7d2c";
-  for (let i = 0; i < 3; i++) {
-    const bx = cx + (i - 1) * tileSize * 0.22 + (rng() - 0.5) * 6;
-    const r = tileSize * (0.2 + rng() * 0.08);
-    ctx.beginPath();
-    ctx.arc(bx, baseY - r * 0.7, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.fillStyle = "#57a83f";
-  ctx.beginPath();
-  ctx.arc(cx, baseY - tileSize * 0.22, tileSize * 0.16, 0, Math.PI * 2);
-  ctx.fill();
+  const img = bushSprites[Math.floor(rng() * bushSprites.length)];
+  _drawTile(ctx, img, px, py - tileSize, tileSize);
 }
-
-const FLOWER_COLORS = ["#e85d75", "#f2c94c", "#ffffff", "#c77dff"];
 
 function _drawFlower(ctx, col, px, py, tileSize) {
   const rng = mulberry32(col * 26113 + 5);
-  const cx = px + tileSize / 2 + (rng() - 0.5) * tileSize * 0.4;
-  const baseY = py;
-  const stemH = tileSize * 0.22;
-
-  ctx.strokeStyle = "#4c8a27";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(cx, baseY);
-  ctx.lineTo(cx, baseY - stemH);
-  ctx.stroke();
-
-  const color = FLOWER_COLORS[Math.floor(rng() * FLOWER_COLORS.length)];
-  ctx.fillStyle = color;
-  const petalR = tileSize * 0.06;
-  const cy = baseY - stemH;
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2;
-    ctx.beginPath();
-    ctx.arc(cx + Math.cos(a) * petalR, cy + Math.sin(a) * petalR, petalR * 0.9, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.fillStyle = "#f2c94c";
-  ctx.beginPath();
-  ctx.arc(cx, cy, petalR * 0.7, 0, Math.PI * 2);
-  ctx.fill();
+  const spec = flowerSprites[Math.floor(rng() * flowerSprites.length)];
+  _drawTile(ctx, spec.top, px, py - tileSize, tileSize);
+  if (spec.root) _drawTile(ctx, spec.root, px, py, tileSize);
 }
 
-const VEGGIE_GREEN_COLORS = {
-  CARROT: "#4c8a27",
-  BEET: "#5a3a6b",
-  TURNIP: "#4c8a27",
+const VEGGIE_TINT = {
+  CARROT: null,
+  BEET: "rgba(107,58,130,0.45)",
+  TURNIP: "rgba(230,225,215,0.5)",
 };
 
-function _drawVeggieGreens(ctx, col, px, py, tileSize, veggieType) {
-  const rng = mulberry32(col * 91771 + 41);
-  const cx = px + tileSize / 2;
-  const color = VEGGIE_GREEN_COLORS[veggieType] || "#4c8a27";
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2.5;
-  ctx.lineCap = "round";
-  const bladeCount = 4;
-  for (let i = 0; i < bladeCount; i++) {
-    const bx = cx + (i - (bladeCount - 1) / 2) * 4 + (rng() - 0.5) * 3;
-    const bh = tileSize * (0.22 + rng() * 0.1);
-    const lean = (rng() - 0.5) * 8;
-    ctx.beginPath();
-    ctx.moveTo(bx, py);
-    ctx.quadraticCurveTo(bx + lean * 0.6, py - bh * 0.6, bx + lean, py - bh);
-    ctx.stroke();
+let tintedVeggieCache = null;
+
+// BEET/TURNIP reuse the carrot art with a tint, applied to both the top and root tiles.
+// Tinting has to happen on an isolated offscreen copy of just the sprite - using source-atop
+// directly on the main canvas would composite against whatever's already painted there (sky,
+// dirt), washing out a whole rectangle instead of just the carrot's own silhouette. Built once
+// per type and cached.
+function _tintTile(img, tint) {
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const cctx = c.getContext("2d");
+  cctx.drawImage(img, 0, 0);
+  cctx.globalCompositeOperation = "source-atop";
+  cctx.fillStyle = tint;
+  cctx.fillRect(0, 0, c.width, c.height);
+  return c;
+}
+
+function _getVeggieTiles(veggieType) {
+  const tint = VEGGIE_TINT[veggieType];
+  if (!tint) return { top: sprites.carrotTop, root: sprites.carrotRoot };
+  tintedVeggieCache ||= {};
+  if (!tintedVeggieCache[veggieType]) {
+    tintedVeggieCache[veggieType] = {
+      top: _tintTile(sprites.carrotTop, tint),
+      root: _tintTile(sprites.carrotRoot, tint),
+    };
   }
+  return tintedVeggieCache[veggieType];
+}
+
+// The carrot's greens (top) and body (root) are two plain adjacent tiles, same as the rooted
+// flowers - greens above the ground line, body filling the surface row cell below it.
+function _drawVeggieGreens(ctx, col, px, py, tileSize, veggieType) {
+  const tiles = _getVeggieTiles(veggieType);
+  _drawTile(ctx, tiles.top, px, py - tileSize, tileSize);
+  _drawTile(ctx, tiles.root, px, py, tileSize);
 }
 
 /** Big soft rolling hill silhouette drawn once behind the surface row - pure ambiance, no gameplay meaning. */

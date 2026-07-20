@@ -9,6 +9,13 @@ import { FOOD_TYPES, CREATURE_STATS } from "./constants.js";
 
 const STEP_DURATION = 260;
 
+let wormSegmentSprites = null; // { head, mid, tail }
+
+/** Must be called once with assets.js's loaded images before any drawCreature call. */
+export function initCreatureSprites(sprites) {
+  wormSegmentSprites = { head: sprites.wormHead, mid: sprites.wormMid, tail: sprites.wormTail };
+}
+
 class Creature {
   constructor(type, col, row) {
     this.type = type;
@@ -27,6 +34,9 @@ class Creature {
     this._toRow = row;
     this._waitTimer = randomBetween(0, CREATURE_STATS[type].moveIntervalMs);
     this.hidden = false; // worms inside solid dirt aren't drawn
+    // Worms are built from a head + tail + 0-3 repeated middle segments, so they come out
+    // in a few different lengths instead of always looking identical.
+    this.wormMiddleSegments = type === "WORM" ? Math.floor(Math.random() * 4) : 0;
   }
 }
 
@@ -280,7 +290,7 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   ctx.scale(c.facing, 1);
 
   if (c.type === "WORM") {
-    drawWorm(ctx, s, t);
+    drawWorm(ctx, s, t, c.wormMiddleSegments);
   } else if (c.type === "ANT") {
     drawAnt(ctx, s, t, c.isBusy);
   } else if (c.type === "TERMITE") {
@@ -292,19 +302,32 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   ctx.restore();
 }
 
-function drawWorm(ctx, s, t) {
-  const wiggle = Math.sin(t * 8) * 2 * s;
-  ctx.strokeStyle = "#d98a9a";
-  ctx.lineWidth = 4 * s;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(-8 * s, wiggle);
-  ctx.quadraticCurveTo(0, -wiggle, 8 * s, wiggle);
-  ctx.stroke();
-  ctx.fillStyle = "#c96c80";
-  ctx.beginPath();
-  ctx.arc(8 * s, wiggle, 2.2 * s, 0, Math.PI * 2);
-  ctx.fill();
+// Built from a head + 0-3 repeated middle segments + tail, always laid out head-on-the-left
+// to tail-on-the-right (matching the sheet's own col4=head..col6=tail ordering) - gives worms
+// a few different lengths instead of one fixed sprite. Every segment (head and tail included)
+// shares one continuous sine, offset by its position along the body, so the wiggle reads as a
+// single peristaltic wave rolling from head to tail rather than independently-bobbing pieces.
+const WORM_WAVE_SPEED = 6;
+const WORM_WAVE_PHASE_PER_SEGMENT = 0.9;
+const WORM_WAVE_AMPLITUDE = 1.8;
+
+function drawWorm(ctx, s, t, middleSegments) {
+  if (!wormSegmentSprites) return;
+  const { head, mid, tail } = wormSegmentSprites;
+  const tileSize = s * 48;
+  const totalSegments = 2 + middleSegments;
+  const totalW = tileSize * totalSegments;
+
+  ctx.save();
+  ctx.rotate(Math.sin(t * 4) * 0.05);
+  let x = -totalW / 2;
+  for (let i = 0; i < totalSegments; i++) {
+    const img = i === 0 ? head : i === totalSegments - 1 ? tail : mid;
+    const wave = Math.sin(t * WORM_WAVE_SPEED - i * WORM_WAVE_PHASE_PER_SEGMENT) * WORM_WAVE_AMPLITUDE * s;
+    ctx.drawImage(img, x, -tileSize / 2 + wave, tileSize, tileSize);
+    x += tileSize;
+  }
+  ctx.restore();
 }
 
 function drawAnt(ctx, s, t, moving) {
