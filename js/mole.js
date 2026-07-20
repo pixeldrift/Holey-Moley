@@ -35,7 +35,30 @@ export class Mole {
     this.hurtTimer = 0;
     this.onScoreChange = null;
     this.onEnergyChange = null;
+    this.onStarsEarned = null;
     this.onEvent = null; // (name, data) for HUD toasts / juice
+
+    // Stat/cosmetic customization, set via applyProfile()/setColors() - defaults are neutral.
+    this.speedFactor = 1;
+    this.strengthFactor = 1;
+    this.staminaRegenFactor = 1;
+    this.maxEnergy = MAX_ENERGY;
+    this.colors = { body: "#8b6f47", belly: "#e6cfa0" };
+  }
+
+  /** Applies stat-derived gameplay multipliers from a Profile. Safe to call mid-run. */
+  applyProfile(effects) {
+    this.speedFactor = effects.speedFactor;
+    this.strengthFactor = effects.strengthFactor;
+    this.staminaRegenFactor = effects.staminaRegenFactor;
+    const oldMax = this.maxEnergy;
+    this.maxEnergy = MAX_ENERGY + effects.maxEnergyBonus;
+    this.energy = Math.min(this.maxEnergy, this.energy + (this.maxEnergy - oldMax));
+    this.onEnergyChange?.(this.energy);
+  }
+
+  setColors(colorSet) {
+    this.colors = { body: colorSet.body, belly: colorSet.belly };
   }
 
   get isBusy() {
@@ -70,13 +93,15 @@ export class Mole {
         this._bump();
         return;
       }
-      this._beginAction(MOVE_ACTION.DIG, targetCol, targetRow, targetTile.digDuration * distanceScale, targetTile.digEnergyCost, targetTile);
+      const duration = targetTile.digDuration * distanceScale * this.speedFactor;
+      const cost = targetTile.digEnergyCost * this.strengthFactor;
+      this._beginAction(MOVE_ACTION.DIG, targetCol, targetRow, duration, cost, targetTile);
       return;
     }
 
     // Open space: climbing if there's any vertical component (includes diagonals), walking if purely horizontal.
     const isVertical = dy !== 0;
-    const duration = (isVertical ? CLIMB_DURATION : WALK_DURATION) * distanceScale;
+    const duration = (isVertical ? CLIMB_DURATION : WALK_DURATION) * distanceScale * this.speedFactor;
     const cost = isVertical ? ENERGY.CLIMB_COST : ENERGY.WALK_COST;
     this._beginAction(isVertical ? MOVE_ACTION.CLIMB : MOVE_ACTION.WALK, targetCol, targetRow, duration, cost, targetTile);
   }
@@ -108,6 +133,7 @@ export class Mole {
     if (amount <= 0) return;
     this.score += amount;
     this.onScoreChange?.(this.score);
+    this.onStarsEarned?.(amount);
   }
 
   update(dt) {
@@ -143,7 +169,8 @@ export class Mole {
   }
 
   _updateSleep(dt) {
-    this.energy = Math.min(MAX_ENERGY, this.energy + (ENERGY.SLEEP_REGEN_PER_SEC * dt) / 1000);
+    const regen = ENERGY.SLEEP_REGEN_PER_SEC * this.staminaRegenFactor * dt / 1000;
+    this.energy = Math.min(this.maxEnergy, this.energy + regen);
     this.onEnergyChange?.(this.energy);
     if (this.energy >= ENERGY.WAKE_THRESHOLD) {
       this.state = "idle";
@@ -193,7 +220,7 @@ export class Mole {
   _applyFood(typeKey) {
     const stats = FOOD_TYPES[typeKey];
     if (!stats) return;
-    this.energy = Math.min(MAX_ENERGY, this.energy + stats.energy);
+    this.energy = Math.min(this.maxEnergy, this.energy + stats.energy);
     this.onEnergyChange?.(this.energy);
     this._addScore(stats.score);
     this.state = "eat";
@@ -216,6 +243,17 @@ export class Mole {
 
 function lerp(a, b, t) {
   return a + (b - a) * t;
+}
+
+// Darkens (negative amt) or lightens (positive) a hex color - used to derive legs/ears/tail
+// shading from whichever body color the player picked, instead of a fixed brown.
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const clamp = (v) => Math.max(0, Math.min(255, v));
+  const r = clamp(((n >> 16) & 255) + 255 * amt);
+  const g = clamp(((n >> 8) & 255) + 255 * amt);
+  const b = clamp((n & 255) + 255 * amt);
+  return `rgb(${r | 0},${g | 0},${b | 0})`;
 }
 function easeInOutQuad(t) {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
@@ -256,9 +294,9 @@ export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
 
   ctx.translate(0, bob * s);
 
-  const bodyColor = hurtFlash ? "#c0503f" : "#8b6f47";
-  const bellyColor = hurtFlash ? "#f0b3a8" : "#e6cfa0";
-  const darkColor = "#5c4529";
+  const bodyColor = hurtFlash ? "#c0503f" : mole.colors.body;
+  const bellyColor = hurtFlash ? "#f0b3a8" : mole.colors.belly;
+  const darkColor = shade(mole.colors.body, -0.28);
 
   // Legs (behind body), animate paw swipe when digging.
   ctx.fillStyle = darkColor;
@@ -353,7 +391,7 @@ function drawSleepingMole(ctx, mole, screenX, screenY, tileSize, t) {
   const breathe = 1 + Math.sin(t * 2.4) * 0.04;
 
   // Tail
-  ctx.strokeStyle = "#5c4529";
+  ctx.strokeStyle = shade(mole.colors.body, -0.28);
   ctx.lineWidth = 2 * s;
   ctx.beginPath();
   ctx.moveTo(-16 * s, 2 * s);
@@ -364,12 +402,12 @@ function drawSleepingMole(ctx, mole, screenX, screenY, tileSize, t) {
   ctx.save();
   ctx.translate(0, 0);
   ctx.scale(1, breathe);
-  ctx.fillStyle = "#8b6f47";
+  ctx.fillStyle = mole.colors.body;
   ctx.beginPath();
   ctx.ellipse(0, 0, 18 * s, 10 * s, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = "#e6cfa0";
+  ctx.fillStyle = mole.colors.belly;
   ctx.beginPath();
   ctx.ellipse(2 * s, 4 * s, 12 * s, 5 * s, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -389,7 +427,7 @@ function drawSleepingMole(ctx, mole, screenX, screenY, tileSize, t) {
   ctx.stroke();
 
   // Ear
-  ctx.fillStyle = "#5c4529";
+  ctx.fillStyle = shade(mole.colors.body, -0.28);
   ctx.beginPath();
   ctx.arc(-4 * s, -9 * s, 3 * s, 0, Math.PI * 2);
   ctx.fill();

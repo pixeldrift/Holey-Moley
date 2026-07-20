@@ -17,7 +17,7 @@ const PALETTES = {
   DIRT_HARD: { base: "#5f3a22", dark: "#472a18", light: "#734830", fleck: "#33200f" },
   ROOT: { base: "#8a5a34", dark: "#6e4527", light: "#a06f45", fleck: "#c99a53" },
   ROCK: { base: "#787878", dark: "#5c5c5c", light: "#949494", fleck: "#484848" },
-  SURFACE: { base: "#8a5a34", dark: "#6e4527", light: "#a06f45", fleck: "#563a20" },
+  SURFACE: { base: "#5fa832", dark: "#4c8a27", light: "#7bc94a", fleck: "#3f7020" },
   TUNNEL: { base: "#241a12", dark: "#160f0a", light: "#31241a", fleck: "#0f0a06" },
 };
 
@@ -189,7 +189,8 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
   }
 
   if (tile === TILE.SURFACE) {
-    _drawGrassCap(ctx, col, px, py, tileSize);
+    _drawGrassBlades(ctx, col, px, py, tileSize);
+    drawSurfaceDecoration(ctx, map, col, px, py, tileSize);
   }
 }
 
@@ -272,22 +273,144 @@ function _drawEdgeBlends(ctx, map, tile, col, row, px, py, tileSize) {
   }
 }
 
-function _drawGrassCap(ctx, col, px, py, tileSize) {
+// The surface tile is a full grass block now (not dirt with a thin cap) - these tufts just
+// give its top edge some texture, poking slightly above the tile boundary into the sky.
+function _drawGrassBlades(ctx, col, px, py, tileSize) {
   const rng = mulberry32(col * 92821 + 17);
-  ctx.fillStyle = "#4c8a27";
-  ctx.fillRect(px, py, tileSize, tileSize * 0.14);
-  ctx.fillStyle = "#5fa832";
-  const bladeCount = 5;
+  ctx.fillStyle = "#3f7020";
+  const bladeCount = 6;
   for (let i = 0; i < bladeCount; i++) {
     const bx = px + (i + 0.5) * (tileSize / bladeCount) + (rng() - 0.5) * 4;
-    const bh = tileSize * (0.12 + rng() * 0.1);
-    const lean = (rng() - 0.5) * 5;
+    const bh = tileSize * (0.14 + rng() * 0.12);
+    const lean = (rng() - 0.5) * 6;
     ctx.beginPath();
     ctx.moveTo(bx - 1.5, py);
     ctx.quadraticCurveTo(bx + lean, py - bh * 0.6, bx + lean * 0.6, py - bh);
     ctx.quadraticCurveTo(bx + lean, py - bh * 0.6, bx + 1.5, py);
     ctx.closePath();
     ctx.fill();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Surface scenery: trees (trunk base + roots below), bushes, flowers, and the
+// visible greens of any root vegetable planted directly beneath this column.
+// All purely decorative except the tree's root tiles, which are real diggable
+// ROOT tiles placed at map-generation time (see tiles.js _generateSurfaceFeatures).
+// ---------------------------------------------------------------------------
+
+function drawSurfaceDecoration(ctx, map, col, px, py, tileSize) {
+  const feature = map.surfaceFeatures?.[col];
+  if (feature?.type === "tree") _drawTreeBase(ctx, col, px, py, tileSize, feature.size);
+  else if (feature?.type === "bush") _drawBush(ctx, col, px, py, tileSize);
+  else if (feature?.type === "flower") _drawFlower(ctx, col, px, py, tileSize);
+
+  const veggieType = map.getRootVeggieGreensType?.(col);
+  if (veggieType) _drawVeggieGreens(ctx, col, px, py, tileSize, veggieType);
+}
+
+const TREE_SIZES = {
+  small: { trunkW: 0.42, trunkH: 0.9, flare: 1.3 },
+  medium: { trunkW: 0.58, trunkH: 1.15, flare: 1.45 },
+  large: { trunkW: 0.78, trunkH: 1.4, flare: 1.6 },
+};
+
+function _drawTreeBase(ctx, col, px, py, tileSize, size) {
+  const rng = mulberry32(col * 51197 + 3);
+  const spec = TREE_SIZES[size] || TREE_SIZES.small;
+  const cx = px + tileSize / 2 + (rng() - 0.5) * tileSize * 0.15;
+  const w = tileSize * spec.trunkW;
+  const h = tileSize * spec.trunkH;
+  const flare = w * spec.flare;
+
+  ctx.fillStyle = "#5a4229";
+  ctx.beginPath();
+  ctx.moveTo(cx - flare / 2, py + tileSize * 0.1);
+  ctx.quadraticCurveTo(cx - w / 2, py - h * 0.3, cx - w / 2, py - h);
+  ctx.lineTo(cx + w / 2, py - h);
+  ctx.quadraticCurveTo(cx + w / 2, py - h * 0.3, cx + flare / 2, py + tileSize * 0.1);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(0,0,0,0.18)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx - w * 0.12, py - h * 0.15);
+  ctx.lineTo(cx - w * 0.12, py - h * 0.85);
+  ctx.stroke();
+}
+
+function _drawBush(ctx, col, px, py, tileSize) {
+  const rng = mulberry32(col * 7639 + 11);
+  const cx = px + tileSize / 2;
+  const baseY = py + tileSize * 0.05;
+  ctx.fillStyle = "#3f7d2c";
+  for (let i = 0; i < 3; i++) {
+    const bx = cx + (i - 1) * tileSize * 0.22 + (rng() - 0.5) * 6;
+    const r = tileSize * (0.2 + rng() * 0.08);
+    ctx.beginPath();
+    ctx.arc(bx, baseY - r * 0.7, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = "#57a83f";
+  ctx.beginPath();
+  ctx.arc(cx, baseY - tileSize * 0.22, tileSize * 0.16, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+const FLOWER_COLORS = ["#e85d75", "#f2c94c", "#ffffff", "#c77dff"];
+
+function _drawFlower(ctx, col, px, py, tileSize) {
+  const rng = mulberry32(col * 26113 + 5);
+  const cx = px + tileSize / 2 + (rng() - 0.5) * tileSize * 0.4;
+  const baseY = py;
+  const stemH = tileSize * 0.22;
+
+  ctx.strokeStyle = "#4c8a27";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(cx, baseY);
+  ctx.lineTo(cx, baseY - stemH);
+  ctx.stroke();
+
+  const color = FLOWER_COLORS[Math.floor(rng() * FLOWER_COLORS.length)];
+  ctx.fillStyle = color;
+  const petalR = tileSize * 0.06;
+  const cy = baseY - stemH;
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(cx + Math.cos(a) * petalR, cy + Math.sin(a) * petalR, petalR * 0.9, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = "#f2c94c";
+  ctx.beginPath();
+  ctx.arc(cx, cy, petalR * 0.7, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+const VEGGIE_GREEN_COLORS = {
+  CARROT: "#4c8a27",
+  BEET: "#5a3a6b",
+  TURNIP: "#4c8a27",
+};
+
+function _drawVeggieGreens(ctx, col, px, py, tileSize, veggieType) {
+  const rng = mulberry32(col * 91771 + 41);
+  const cx = px + tileSize / 2;
+  const color = VEGGIE_GREEN_COLORS[veggieType] || "#4c8a27";
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = "round";
+  const bladeCount = 4;
+  for (let i = 0; i < bladeCount; i++) {
+    const bx = cx + (i - (bladeCount - 1) / 2) * 4 + (rng() - 0.5) * 3;
+    const bh = tileSize * (0.22 + rng() * 0.1);
+    const lean = (rng() - 0.5) * 8;
+    ctx.beginPath();
+    ctx.moveTo(bx, py);
+    ctx.quadraticCurveTo(bx + lean * 0.6, py - bh * 0.6, bx + lean, py - bh);
+    ctx.stroke();
   }
 }
 

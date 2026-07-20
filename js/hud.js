@@ -1,5 +1,6 @@
 import { MAX_ENERGY } from "./mole.js";
 import { ENERGY } from "./constants.js";
+import { STATS, STAT_MAX_LEVEL, MOLE_COLORS } from "./profile.js";
 
 export class HUD {
   constructor() {
@@ -12,6 +13,7 @@ export class HUD {
     this.startScreen = document.getElementById("start-screen");
     this.pauseScreen = document.getElementById("pause-screen");
     this.settingsScreen = document.getElementById("settings-screen");
+    this.moleScreen = document.getElementById("mole-screen");
 
     this.btnPlay = document.getElementById("btn-play");
     this.btnPause = document.getElementById("btn-pause");
@@ -21,6 +23,12 @@ export class HUD {
     this.btnRestart = document.getElementById("btn-restart");
     this.chkSound = document.getElementById("chk-sound");
     this.selControls = document.getElementById("sel-controls");
+
+    this.btnMole = document.getElementById("btn-mole");
+    this.btnCloseMole = document.getElementById("btn-close-mole");
+    this.moleStarsEl = document.getElementById("mole-stars-value");
+    this.statRowsEl = document.getElementById("stat-rows");
+    this.colorSwatchesEl = document.getElementById("color-swatches");
 
     this.callbacks = {};
   }
@@ -38,6 +46,8 @@ export class HUD {
     this.btnRestart.addEventListener("click", () => this.callbacks.restart?.());
     this.chkSound.addEventListener("change", (e) => this.callbacks.soundToggle?.(e.target.checked));
     this.selControls.addEventListener("change", (e) => this.callbacks.controlSchemeChange?.(e.target.value));
+    this.btnMole.addEventListener("click", () => this.callbacks.openMole?.());
+    this.btnCloseMole.addEventListener("click", () => this.callbacks.closeMole?.());
   }
 
   showStart() {
@@ -60,6 +70,61 @@ export class HUD {
   hideSettings() {
     this.settingsScreen.classList.add("hidden");
   }
+  showMole() {
+    this.moleScreen.classList.remove("hidden");
+  }
+  hideMole() {
+    this.moleScreen.classList.add("hidden");
+  }
+
+  /** Rebuilds the stat rows + color swatches from the current profile state. Call whenever
+   *  the panel opens and after every upgrade/color pick so pips/costs/selection stay accurate. */
+  renderMoleScreen(profile) {
+    this.moleStarsEl.textContent = profile.stars;
+
+    this.statRowsEl.innerHTML = "";
+    for (const key of Object.keys(STATS)) {
+      const def = STATS[key];
+      const level = profile.level(key);
+      const maxed = level >= STAT_MAX_LEVEL;
+      const cost = profile.costFor(key);
+      const canAfford = profile.canUpgrade(key);
+
+      const row = document.createElement("div");
+      row.className = "stat-row";
+
+      const pips = Array.from({ length: STAT_MAX_LEVEL }, (_, i) =>
+        `<span class="stat-pip${i < level ? " filled" : ""}"></span>`
+      ).join("");
+
+      row.innerHTML = `
+        <div class="stat-row-top">
+          <span class="stat-name">${def.label}</span>
+          <button class="stat-upgrade-btn" ${maxed || !canAfford ? "disabled" : ""}>
+            ${maxed ? "Max" : `Upgrade (${cost}⭐)`}
+          </button>
+        </div>
+        <div class="stat-pips">${pips}</div>
+        <div class="stat-desc">${def.description}</div>
+      `;
+
+      const btn = row.querySelector(".stat-upgrade-btn");
+      if (!maxed) {
+        btn.addEventListener("click", () => this.callbacks.upgradeStat?.(key));
+      }
+      this.statRowsEl.appendChild(row);
+    }
+
+    this.colorSwatchesEl.innerHTML = "";
+    for (const c of MOLE_COLORS) {
+      const swatch = document.createElement("button");
+      swatch.className = `color-swatch${c.id === profile.colorId ? " selected" : ""}`;
+      swatch.style.background = c.body;
+      swatch.setAttribute("aria-label", c.name);
+      swatch.addEventListener("click", () => this.callbacks.pickColor?.(c.id));
+      this.colorSwatchesEl.appendChild(swatch);
+    }
+  }
 
   setScore(score) {
     this.scoreEl.textContent = score;
@@ -69,8 +134,8 @@ export class HUD {
     this.depthEl.textContent = Math.max(0, depth);
   }
 
-  setEnergy(energy) {
-    const pct = Math.max(0, Math.min(100, (energy / MAX_ENERGY) * 100));
+  setEnergy(energy, maxEnergy = MAX_ENERGY) {
+    const pct = Math.max(0, Math.min(100, (energy / maxEnergy) * 100));
     this.energyFillEl.style.width = `${pct}%`;
 
     const critical = pct <= ENERGY.CRITICAL_THRESHOLD;

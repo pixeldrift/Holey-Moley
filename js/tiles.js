@@ -2,7 +2,7 @@
 // Rendering uses these as material identities; actual pixel textures live in textures.js
 // so a tile's `color`/`accent` here are only used as a fallback / tint reference.
 
-import { BLOCK_STATS, FOOD_ID } from "./constants.js";
+import { BLOCK_STATS, FOOD_ID, FOOD_ID_TO_TYPE } from "./constants.js";
 
 export const TILE = {
   SKY: {
@@ -10,11 +10,11 @@ export const TILE = {
     color: null, // sky is painted as a gradient, not a flat tile
   },
   SURFACE: {
-    // The walkway at ground level. Non-diggable - it's just open ground with a thin
-    // decorative grass cap drawn on top (see textures.js). The real grass "hill" scenery
-    // behind it is pure background art, not a tile at all.
+    // The walkway at ground level, rendered as a full grass block (see textures.js).
+    // Non-diggable - it's the ground itself, not something to tunnel through. The rolling
+    // hill silhouette behind it is separate, pure background art, not a tile at all.
     id: "SURFACE", solid: false, diggable: false, walkable: true,
-    color: "#8a5a34", accent: "#7a4d2a",
+    color: "#5fa832", accent: "#4c8a27",
   },
   TUNNEL: {
     id: "TUNNEL", solid: false, diggable: false, walkable: true,
@@ -60,9 +60,11 @@ export class TileMap {
     this.height = height;
     this.skyRows = skyRows;
     this.surfaceRow = skyRows;
+    this.startCol = Math.floor(width / 2);
     this.grid = new Array(width * height);
     this.food = new Uint8Array(width * height); // holds FOOD_ID codes
     this.cornerCuts = new Uint8Array(width * height); // holds CORNER codes
+    this.surfaceFeatures = new Array(width).fill(null); // trees/bushes/flowers, keyed by column
     this._rng = mulberry32(seed ?? Date.now());
     this._generate();
   }
@@ -103,6 +105,13 @@ export class TileMap {
   setFoodId(x, y, id) {
     if (!this.inBounds(x, y)) return;
     this.food[this.idx(x, y)] = id;
+  }
+
+  /** Root-vegetable type (if any) planted directly under the grass at this column, used to
+   *  draw its greens poking up above ground as a permanent dig hint. */
+  getRootVeggieGreensType(col) {
+    const type = FOOD_ID_TO_TYPE[this.getFoodId(col, this.surfaceRow + 1)];
+    return type === "CARROT" || type === "BEET" || type === "TURNIP" ? type : null;
   }
 
   setTile(x, y, tile) {
@@ -182,16 +191,80 @@ export class TileMap {
       }
     }
 
-    // Root vegetables - shallow only, just under the surface.
+    // Root vegetables - always in the tile directly under the grass, so digging one tile
+    // down from the surface is enough to reach them. Their greens render above ground
+    // regardless (see textures.js), giving the player a permanent hint of where they are.
     const rootVeggies = [FOOD_ID.CARROT, FOOD_ID.BEET, FOOD_ID.TURNIP];
-    for (let y = this.surfaceRow + 1; y <= this.surfaceRow + 4; y++) {
-      for (let x = 0; x < this.width; x++) {
-        const tile = this.getTile(x, y);
-        if (tile.diggable && tile !== TILE.ROOT && this.getFoodId(x, y) === FOOD_ID.NONE && rng() < 0.05) {
-          this.setFoodId(x, y, rootVeggies[Math.floor(rng() * rootVeggies.length)]);
+    const veggieRow = this.surfaceRow + 1;
+    for (let x = 0; x < this.width; x++) {
+      const tile = this.getTile(x, veggieRow);
+      if (tile.diggable && tile !== TILE.ROOT && rng() < 0.12) {
+        this.setFoodId(x, veggieRow, rootVeggies[Math.floor(rng() * rootVeggies.length)]);
+      }
+    }
+
+    this._generateSurfaceFeatures(rng);
+    this._carveStartingBurrow();
+  }
+
+  _generateSurfaceFeatures(rng) {
+    let col = 2;
+    while (col < this.width - 2) {
+      col += 6 + Math.floor(rng() * 10);
+      if (col >= this.width - 2) break;
+
+      const roll = rng();
+      if (roll < 0.28) {
+        const sizeRoll = rng();
+        const size = sizeRoll < 0.5 ? "small" : sizeRoll < 0.85 ? "medium" : "large";
+        this.surfaceFeatures[col] = { type: "tree", size };
+        this._growTreeRoots(col, size, rng);
+      } else if (roll < 0.55) {
+        this.surfaceFeatures[col] = { type: "bush" };
+      } else if (roll < 0.8) {
+        this.surfaceFeatures[col] = { type: "flower" };
+      }
+    }
+  }
+
+  // Bigger trees send down deeper, wider root systems - real diggable ROOT tiles, tougher
+  // and slower to clear than plain dirt, so a big tree visually explains a tough patch below.
+  _growTreeRoots(col, size, rng) {
+    const maxDepth = { small: 3, medium: 5, large: 8 }[size];
+    const maxSpread = { small: 1, medium: 2, large: 3 }[size];
+    for (let d = 1; d <= maxDepth; d++) {
+      const row = this.surfaceRow + d;
+      const spread = Math.max(0, maxSpread - Math.floor(d / 2));
+      for (let s = -spread; s <= spread; s++) {
+        if (rng() >= 0.7) continue;
+        const x = col + s;
+        const tile = this.getTile(x, row);
+        if (tile.diggable) {
+          this.setTile(x, row, TILE.ROOT);
+          this.setFoodId(x, row, FOOD_ID.NONE);
         }
       }
     }
+  }
+
+  // A small pre-dug home base so the game doesn't start on a completely blank slate: a
+  // short shaft down from the surface opening into a 2x2 chamber.
+  _carveStartingBurrow() {
+    const c0 = this.startCol;
+    this._forceTunnel(c0, this.surfaceRow + 1);
+    this._forceTunnel(c0, this.surfaceRow + 2);
+    for (const x of [c0, c0 + 1]) {
+      for (const y of [this.surfaceRow + 3, this.surfaceRow + 4]) {
+        this._forceTunnel(x, y);
+      }
+    }
+  }
+
+  _forceTunnel(x, y) {
+    if (!this.inBounds(x, y)) return;
+    this.setTile(x, y, TILE.TUNNEL);
+    this.setFoodId(x, y, FOOD_ID.NONE);
+    this.cornerCuts[this.idx(x, y)] = CORNER.NONE;
   }
 
   _pickDirtTile(depth, rng) {
