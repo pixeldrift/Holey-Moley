@@ -27,6 +27,7 @@
     </div>
 
     <div id="hud-top-right" class="hud-corner">
+      <button id="btn-mole" class="hud-btn" aria-label="Mole stats">🐹</button>
       <button id="btn-pause" class="hud-btn" aria-label="Pause">⏸</button>
       <button id="btn-settings" class="hud-btn" aria-label="Settings">⚙</button>
     </div>
@@ -72,6 +73,21 @@
       </label>
       <button id="btn-restart" class="big-btn secondary">Restart Game</button>
       <button id="btn-close-settings" class="big-btn">Close</button>
+    </div>
+  </div>
+
+  <!-- Mole stats / customization -->
+  <div id="mole-screen" class="overlay hidden">
+    <div class="overlay-card">
+      <h2>Your Mole</h2>
+      <div id="mole-stars" class="stars-total"><span class="hud-icon">⭐</span> <span id="mole-stars-value">0</span></div>
+
+      <div id="stat-rows"></div>
+
+      <h3>Color</h3>
+      <div id="color-swatches"></div>
+
+      <button id="btn-close-mole" class="big-btn">Close</button>
     </div>
   </div>
 </div>

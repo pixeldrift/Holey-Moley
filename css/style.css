@@ -182,6 +182,8 @@ html, body {
   padding: 24px 28px;
   max-width: 320px;
   width: 88%;
+  max-height: 85vh;
+  overflow-y: auto;
   text-align: center;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
 }
@@ -244,4 +246,97 @@ html, body {
 .settings-row select {
   font-size: 14px;
   padding: 4px;
+}
+
+.stars-total {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.overlay-card h3 {
+  margin: 16px 0 8px;
+  font-size: 15px;
+  text-align: left;
+}
+
+.stat-row {
+  text-align: left;
+  padding: 8px 0;
+  border-bottom: 1px solid #e6dcc8;
+}
+
+.stat-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stat-name {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.stat-desc {
+  font-size: 12px;
+  color: #6b5b4a;
+  margin-top: 2px;
+}
+
+.stat-pips {
+  display: flex;
+  gap: 3px;
+  margin: 6px 0;
+}
+
+.stat-pip {
+  width: 16px;
+  height: 8px;
+  border-radius: 3px;
+  background: #e6dcc8;
+}
+
+.stat-pip.filled {
+  background: #d2691e;
+}
+
+.stat-upgrade-btn {
+  border: none;
+  border-radius: 8px;
+  background: #d2691e;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+
+.stat-upgrade-btn:disabled {
+  background: #cbbfa8;
+  color: #8a7e68;
+}
+
+.color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  margin: 8px 0 4px;
+}
+
+.color-swatch {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.15);
+}
+
+.color-swatch.selected {
+  border-color: #d2691e;
 }

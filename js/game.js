@@ -4,17 +4,23 @@ import { InputController } from "./input.js";
 import { HUD } from "./hud.js";
 import { CreatureManager, drawCreature } from "./creatures.js";
 import { drawTerrainTile, drawBackgroundHills } from "./textures.js";
+import { Profile } from "./profile.js";
 
 const TILE_SIZE = 48;
 const MAP_WIDTH = 40;
 const MAP_HEIGHT = 90;
 const SKY_ROWS = 3;
+// The grass tile is a full block now; anything standing on the surface row draws biased
+// toward its bottom edge so it reads as walking in the thin gap under the turf, not
+// floating mid-tile in what's now solid-looking ground.
+const SURFACE_Y_BIAS = TILE_SIZE * 0.32;
 
 export class Game {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.hud = new HUD();
+    this.profile = new Profile();
     this.state = "menu"; // menu | playing | paused
     this.camera = { x: 0, y: 0 };
     this.lastTime = 0;
@@ -37,14 +43,17 @@ export class Game {
 
   _newMap() {
     this.map = new TileMap(MAP_WIDTH, MAP_HEIGHT, { skyRows: SKY_ROWS });
-    this.mole = new Mole(this.map, Math.floor(MAP_WIDTH / 2), this.map.surfaceRow);
+    this.mole = new Mole(this.map, this.map.startCol, this.map.surfaceRow);
+    this.mole.applyProfile(this.profile.effects());
+    this.mole.setColors(this.profile.colorSet);
     this.mole.onScoreChange = (score) => this.hud.setScore(score);
-    this.mole.onEnergyChange = (energy) => this.hud.setEnergy(energy);
+    this.mole.onEnergyChange = (energy) => this.hud.setEnergy(energy, this.mole.maxEnergy);
+    this.mole.onStarsEarned = (amount) => this.profile.earnStars(amount);
     this.creatures = new CreatureManager(this.map, this.mole.col);
     this.camera.x = this.mole.col * TILE_SIZE;
     this.camera.y = this.mole.row * TILE_SIZE;
     this.hud.setScore(0);
-    this.hud.setEnergy(this.mole.energy);
+    this.hud.setEnergy(this.mole.energy, this.mole.maxEnergy);
     this.hud.setDepth(0);
   }
 
@@ -71,6 +80,27 @@ export class Game {
     });
     this.hud.on("controlSchemeChange", (mode) => {
       this.tapToMoveOnly = mode === "tap";
+    });
+    this.hud.on("openMole", () => {
+      this._wasPlayingBeforeMole = this.state === "playing";
+      if (this.state === "playing") this.state = "paused";
+      this.hud.renderMoleScreen(this.profile);
+      this.hud.showMole();
+    });
+    this.hud.on("closeMole", () => {
+      this.hud.hideMole();
+      if (this._wasPlayingBeforeMole) this.state = "playing";
+    });
+    this.hud.on("upgradeStat", (stat) => {
+      if (this.profile.upgrade(stat)) {
+        this.mole.applyProfile(this.profile.effects());
+        this.hud.renderMoleScreen(this.profile);
+      }
+    });
+    this.hud.on("pickColor", (colorId) => {
+      this.profile.setColor(colorId);
+      this.mole.setColors(this.profile.colorSet);
+      this.hud.renderMoleScreen(this.profile);
     });
   }
 
@@ -195,14 +225,20 @@ export class Game {
       const checkRow = Math.round(c.py);
       if (c.type === "WORM" && this.map.getTile(checkCol, checkRow).solid) continue;
       const x = originX + c.px * TILE_SIZE;
-      const y = originY + c.py * TILE_SIZE;
+      const y = originY + c.py * TILE_SIZE + this._surfaceBias(c.py);
       if (x < -TILE_SIZE || x > viewW + TILE_SIZE || y < -TILE_SIZE || y > viewH + TILE_SIZE) continue;
       drawCreature(ctx, c, x, y, TILE_SIZE, now);
     }
 
     // Mole
     const moleX = originX + this.mole.px * TILE_SIZE;
-    const moleY = originY + this.mole.py * TILE_SIZE;
+    const moleY = originY + this.mole.py * TILE_SIZE + this._surfaceBias(this.mole.py);
     drawMole(ctx, this.mole, moleX, moleY, TILE_SIZE, now);
+  }
+
+  // Smoothly fades in/out as an entity's row approaches/leaves the surface row, so the
+  // bias doesn't pop as the mole or a bug climbs into or out of the grass layer.
+  _surfaceBias(rowPosition) {
+    return Math.max(0, 1 - Math.abs(rowPosition - this.map.surfaceRow)) * SURFACE_Y_BIAS;
   }
 }
