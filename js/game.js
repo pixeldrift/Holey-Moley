@@ -10,10 +10,6 @@ const TILE_SIZE = 48;
 const MAP_WIDTH = 40;
 const MAP_HEIGHT = 90;
 const SKY_ROWS = 3;
-// The grass tile is a full block now; anything standing on the surface row draws biased
-// toward its bottom edge so it reads as walking in the thin gap under the turf, not
-// floating mid-tile in what's now solid-looking ground.
-const SURFACE_Y_BIAS = TILE_SIZE * 0.32;
 
 export class Game {
   constructor(canvas, sprites) {
@@ -230,20 +226,16 @@ export class Game {
       const checkRow = Math.round(c.py);
       if (c.type === "WORM" && this.map.getTile(checkCol, checkRow).solid) continue;
       const x = originX + c.px * TILE_SIZE;
-      const y = originY + c.py * TILE_SIZE + this._surfaceBias(c.py);
+      const y = originY + c.py * TILE_SIZE;
       if (x < -TILE_SIZE || x > viewW + TILE_SIZE || y < -TILE_SIZE || y > viewH + TILE_SIZE) continue;
       drawCreature(ctx, c, x, y, TILE_SIZE, now);
     }
 
-    // Mole
+    // Mole. Its row cell's bottom edge is the ground line (originY + (surfaceRow+1)*TILE_SIZE,
+    // i.e. the top of the second tile) with no extra bias needed - same reference point every
+    // terrain tile and piece of scenery uses.
     const moleX = originX + this.mole.px * TILE_SIZE;
-    const moleY = originY + this.mole.py * TILE_SIZE + this._surfaceBias(this.mole.py);
+    const moleY = originY + this.mole.py * TILE_SIZE;
     drawMole(ctx, this.mole, moleX, moleY, TILE_SIZE, now);
-  }
-
-  // Smoothly fades in/out as an entity's row approaches/leaves the surface row, so the
-  // bias doesn't pop as the mole or a bug climbs into or out of the grass layer.
-  _surfaceBias(rowPosition) {
-    return Math.max(0, 1 - Math.abs(rowPosition - this.map.surfaceRow)) * SURFACE_Y_BIAS;
   }
 }

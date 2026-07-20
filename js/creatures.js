@@ -304,30 +304,50 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
 
 // Built from a head + 0-3 repeated middle segments + tail, always laid out head-on-the-left
 // to tail-on-the-right (matching the sheet's own col4=head..col6=tail ordering) - gives worms
-// a few different lengths instead of one fixed sprite. Every segment (head and tail included)
-// shares one continuous sine, offset by its position along the body, so the wiggle reads as a
-// single peristaltic wave rolling from head to tail rather than independently-bobbing pieces.
-const WORM_WAVE_SPEED = 6;
-const WORM_WAVE_PHASE_PER_SEGMENT = 0.9;
-const WORM_WAVE_AMPLITUDE = 1.8;
+// a few different lengths instead of one fixed sprite.
+//
+// Regular worms render at half the sheet's native 64px tile size - the sprite sheet itself is
+// left untouched at full size so a later "boss worm" can reuse the same art at WORM_DISPLAY_SCALE
+// 1 (or higher) for a dramatically bigger creature.
+const WORM_DISPLAY_SCALE = 0.5;
+
+// Inchworm gait: compress the body toward the head (tail scoots forward, head fixed), then
+// extend it back out from the tail (head reaches forward, tail fixed) - alternating which end
+// stays put over one cycle is what reads as "inching" rather than just squashing in place.
+const WORM_INCH_CYCLE_MS = 1000;
+const WORM_INCH_MIN_SCALE = 0.8;
 
 function drawWorm(ctx, s, t, middleSegments) {
   if (!wormSegmentSprites) return;
   const { head, mid, tail } = wormSegmentSprites;
-  const tileSize = s * 48;
+  const tileSize = s * 48 * WORM_DISPLAY_SCALE;
   const totalSegments = 2 + middleSegments;
-  const totalW = tileSize * totalSegments;
+
+  const half = WORM_INCH_CYCLE_MS / 2;
+  const cycleMs = (t * 1000) % WORM_INCH_CYCLE_MS;
+  const compressing = cycleMs < half;
+  const local = easeInOutQuad((compressing ? cycleMs : cycleMs - half) / half);
+  const scaleX = compressing
+    ? lerp(1, WORM_INCH_MIN_SCALE, local)
+    : lerp(WORM_INCH_MIN_SCALE, 1, local);
+
+  const restW = tileSize * totalSegments;
+  const headX = -restW / 2; // fixed while compressing
+  const tailXAtMin = headX + (totalSegments - 1) * tileSize * WORM_INCH_MIN_SCALE; // where the tail lands at full compression; fixed while extending
 
   ctx.save();
-  ctx.rotate(Math.sin(t * 4) * 0.05);
-  let x = -totalW / 2;
   for (let i = 0; i < totalSegments; i++) {
     const img = i === 0 ? head : i === totalSegments - 1 ? tail : mid;
-    const wave = Math.sin(t * WORM_WAVE_SPEED - i * WORM_WAVE_PHASE_PER_SEGMENT) * WORM_WAVE_AMPLITUDE * s;
-    ctx.drawImage(img, x, -tileSize / 2 + wave, tileSize, tileSize);
-    x += tileSize;
+    const x = compressing
+      ? headX + i * tileSize * scaleX
+      : tailXAtMin - (totalSegments - 1 - i) * tileSize * scaleX;
+    ctx.drawImage(img, x, -tileSize / 2, tileSize, tileSize);
   }
   ctx.restore();
+}
+
+function easeInOutQuad(t) {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
 function drawAnt(ctx, s, t, moving) {
