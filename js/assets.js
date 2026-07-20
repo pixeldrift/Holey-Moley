@@ -1,7 +1,9 @@
-// Sprite assets, cut directly from "Holey Moley Spritesheet.png" with no further processing
-// (no blur, no seamless-ification) - the terrain rows are already independently-tileable
-// 64x64 variants by design, so each material just needs several of them to pick between at
-// random per grid cell instead of one texture stretched everywhere.
+// Sprite assets, cut directly from "Holey Moley Spritesheet.png" as raw, untrimmed 64x64
+// crops on the sheet's native grid - every source below is one grid cell (or, for the head/
+// root pairs and worm segments, a run of adjacent cells), always starting at (0,0) and always
+// at (col*64, row*64). No content-bbox trimming, no scaling, no fractional anchoring: sprites
+// that span multiple tiles (flower top+root, carrot top+root, worm head/mid/tail) are just
+// several full 64x64 cells meant to be drawn edge-to-edge, exactly like the terrain variants.
 
 function terrainVariants(material) {
   return [0, 1, 2, 3].map((i) => `assets/terrain_${material}_${i}.png`);
@@ -14,19 +16,25 @@ const SOURCES = {
   terrainDirt: terrainVariants("dirt"),
   terrainGravel: terrainVariants("gravel"),
   terrainRock: terrainVariants("rock"),
+  // The randomized ROOT-tile overlay reuses the same root art drawn beneath the three rooted
+  // flowers below - no separate crop needed.
   rootOverlays: [
-    "assets/root_overlay_0.png",
-    "assets/root_overlay_1.png",
-    "assets/root_overlay_2.png",
+    "assets/flower_coneflower_root.png",
+    "assets/flower_daisy_white_root.png",
+    "assets/flower_bellflower_root.png",
   ],
   treeTrunk: "assets/tree_trunk.png",
   bushDark: "assets/bush_dark.png",
   bushFlowering: "assets/bush_flowering.png",
   flowerDaisyYellow: "assets/flower_daisy_yellow.png",
-  flowerConeflower: "assets/flower_coneflower.png",
-  flowerDaisyWhite: "assets/flower_daisy_white.png",
-  flowerBellflower: "assets/flower_bellflower.png",
-  carrot: "assets/carrot.png",
+  flowerConeflowerTop: "assets/flower_coneflower_top.png",
+  flowerConeflowerRoot: "assets/flower_coneflower_root.png",
+  flowerDaisyWhiteTop: "assets/flower_daisy_white_top.png",
+  flowerDaisyWhiteRoot: "assets/flower_daisy_white_root.png",
+  flowerBellflowerTop: "assets/flower_bellflower_top.png",
+  flowerBellflowerRoot: "assets/flower_bellflower_root.png",
+  carrotTop: "assets/carrot_top.png",
+  carrotRoot: "assets/carrot_root.png",
   wormHead: "assets/worm_head.png",
   wormMid: "assets/worm_mid.png",
   wormTail: "assets/worm_tail.png",

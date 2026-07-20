@@ -31,11 +31,13 @@ export function initTextures(loadedSprites) {
     gravel: sprites.terrainGravel,
     rock: sprites.terrainRock,
   };
+  // daisy_yellow is a single tile with no exposed roots; the other three are a top+root
+  // pair of tiles, same shape as the carrot below.
   flowerSprites = [
-    { img: sprites.flowerDaisyYellow, collar: 1 },
-    { img: sprites.flowerConeflower, collar: 0.4 },
-    { img: sprites.flowerDaisyWhite, collar: 0.4 },
-    { img: sprites.flowerBellflower, collar: 0.42 },
+    { top: sprites.flowerDaisyYellow, root: null },
+    { top: sprites.flowerConeflowerTop, root: sprites.flowerConeflowerRoot },
+    { top: sprites.flowerDaisyWhiteTop, root: sprites.flowerDaisyWhiteRoot },
+    { top: sprites.flowerBellflowerTop, root: sprites.flowerBellflowerRoot },
   ];
   bushSprites = [sprites.bushDark, sprites.bushFlowering];
 }
@@ -80,9 +82,7 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
 
   if (tile === TILE.ROOT) {
     const overlay = pickVariant(sprites.rootOverlays, col, row, 7);
-    const oh = tileSize * 1.1;
-    const ow = oh * (overlay.naturalWidth / overlay.naturalHeight);
-    ctx.drawImage(overlay, px + tileSize / 2 - ow / 2, py - tileSize * 0.05, ow, oh);
+    ctx.drawImage(overlay, px, py, tileSize, tileSize);
   }
 }
 
@@ -154,7 +154,7 @@ function _drawDiagonalTile(ctx, variants, col, row, cornerCut, px, py, tileSize)
 
 function drawSurfaceDecoration(ctx, map, col, px, py, tileSize) {
   const feature = map.surfaceFeatures?.[col];
-  if (feature?.type === "tree") _drawTreeBase(ctx, col, px, py, tileSize, feature.size);
+  if (feature?.type === "tree") _drawTreeBase(ctx, col, px, py, tileSize);
   else if (feature?.type === "bush") _drawBush(ctx, col, px, py, tileSize);
   else if (feature?.type === "flower") _drawFlower(ctx, col, px, py, tileSize);
 
@@ -187,45 +187,30 @@ function mulberry32(seed) {
   };
 }
 
-// Anchors a sprite so its "collar" point (where stem/trunk meets the ground, as a fraction
-// of the image's own height, 0=top 1=bottom) lands on the ground line. The ground line is
-// the BOTTOM of the grass tile (grass art fills the whole 64x64 cell, walkable ground at
-// its bottom edge) - same reference point every decoration and the mole/bugs use.
-// `img` may be an <img> (naturalWidth/Height) or an offscreen <canvas> (width/height).
-function _drawAnchored(ctx, img, cx, groundY, dispH, collarFrac) {
-  const w = img.naturalWidth ?? img.width;
-  const h = img.naturalHeight ?? img.height;
-  const dispW = dispH * (w / h);
-  const destY = groundY - dispH * collarFrac;
-  ctx.drawImage(img, cx - dispW / 2, destY, dispW, dispH);
+// Every sprite is exactly one 64x64 cell from the sheet's own grid, so "above ground" pieces
+// (tree/bush/flower tops) draw as a single full tile directly above the surface row, and
+// "below ground" pieces (flower/carrot roots) draw as a single full tile in the surface row
+// itself - two plain adjacent tiles meeting exactly at the ground line, no scaling or
+// fractional anchoring needed.
+function _drawTile(ctx, img, px, py, tileSize) {
+  ctx.drawImage(img, px, py, tileSize, tileSize);
 }
 
-const TREE_HEIGHTS = { small: 0.95, medium: 1.25, large: 1.55 };
-
-function _drawTreeBase(ctx, col, px, py, tileSize, size) {
-  const rng = mulberry32(col * 51197 + 3);
-  const cx = px + tileSize / 2 + (rng() - 0.5) * tileSize * 0.1;
-  const groundY = py + tileSize;
-  const dispH = tileSize * (TREE_HEIGHTS[size] || TREE_HEIGHTS.small);
-  _drawAnchored(ctx, sprites.treeTrunk, cx, groundY, dispH, 0.92);
+function _drawTreeBase(ctx, col, px, py, tileSize) {
+  _drawTile(ctx, sprites.treeTrunk, px, py - tileSize, tileSize);
 }
 
 function _drawBush(ctx, col, px, py, tileSize) {
   const rng = mulberry32(col * 7639 + 11);
   const img = bushSprites[Math.floor(rng() * bushSprites.length)];
-  const cx = px + tileSize / 2;
-  const groundY = py + tileSize;
-  const dispH = tileSize * (0.85 + rng() * 0.15);
-  _drawAnchored(ctx, img, cx, groundY, dispH, 0.88);
+  _drawTile(ctx, img, px, py - tileSize, tileSize);
 }
 
 function _drawFlower(ctx, col, px, py, tileSize) {
   const rng = mulberry32(col * 26113 + 5);
   const spec = flowerSprites[Math.floor(rng() * flowerSprites.length)];
-  const cx = px + tileSize / 2 + (rng() - 0.5) * tileSize * 0.3;
-  const groundY = py + tileSize;
-  const dispH = tileSize * (spec.collar === 1 ? 0.85 : 1.3);
-  _drawAnchored(ctx, spec.img, cx, groundY, dispH, spec.collar);
+  _drawTile(ctx, spec.top, px, py - tileSize, tileSize);
+  if (spec.root) _drawTile(ctx, spec.root, px, py, tileSize);
 }
 
 const VEGGIE_TINT = {
@@ -236,17 +221,12 @@ const VEGGIE_TINT = {
 
 let tintedVeggieCache = null;
 
-// BEET/TURNIP reuse the carrot art with a tint. Tinting has to happen on an isolated
-// offscreen copy of just the sprite - using source-atop directly on the main canvas would
-// composite against whatever's already painted there (sky, dirt), washing out a whole
-// rectangle instead of just the carrot's own silhouette. Built once and cached.
-function _getTintedVeggieImage(veggieType) {
-  const tint = VEGGIE_TINT[veggieType];
-  if (!tint) return sprites.carrot;
-  tintedVeggieCache ||= {};
-  if (tintedVeggieCache[veggieType]) return tintedVeggieCache[veggieType];
-
-  const img = sprites.carrot;
+// BEET/TURNIP reuse the carrot art with a tint, applied to both the top and root tiles.
+// Tinting has to happen on an isolated offscreen copy of just the sprite - using source-atop
+// directly on the main canvas would composite against whatever's already painted there (sky,
+// dirt), washing out a whole rectangle instead of just the carrot's own silhouette. Built once
+// per type and cached.
+function _tintTile(img, tint) {
   const c = document.createElement("canvas");
   c.width = img.naturalWidth;
   c.height = img.naturalHeight;
@@ -255,21 +235,28 @@ function _getTintedVeggieImage(veggieType) {
   cctx.globalCompositeOperation = "source-atop";
   cctx.fillStyle = tint;
   cctx.fillRect(0, 0, c.width, c.height);
-  tintedVeggieCache[veggieType] = c;
   return c;
 }
 
-// The carrot art already has both the greens (top) and root (bottom) in one image, with a
-// "collar" where they meet at roughly 28% down from the top - lining that up with the grass
-// line puts the greens above ground and the root hanging into the tile below, exactly
-// matching the "body under the grass, greens above" layout, spanning ~2 tiles tall.
+function _getVeggieTiles(veggieType) {
+  const tint = VEGGIE_TINT[veggieType];
+  if (!tint) return { top: sprites.carrotTop, root: sprites.carrotRoot };
+  tintedVeggieCache ||= {};
+  if (!tintedVeggieCache[veggieType]) {
+    tintedVeggieCache[veggieType] = {
+      top: _tintTile(sprites.carrotTop, tint),
+      root: _tintTile(sprites.carrotRoot, tint),
+    };
+  }
+  return tintedVeggieCache[veggieType];
+}
+
+// The carrot's greens (top) and body (root) are two plain adjacent tiles, same as the rooted
+// flowers - greens above the ground line, body filling the surface row cell below it.
 function _drawVeggieGreens(ctx, col, px, py, tileSize, veggieType) {
-  const rng = mulberry32(col * 91771 + 41);
-  const img = _getTintedVeggieImage(veggieType);
-  const cx = px + tileSize / 2 + (rng() - 0.5) * tileSize * 0.15;
-  const groundY = py + tileSize;
-  const dispH = tileSize * 1.95;
-  _drawAnchored(ctx, img, cx, groundY, dispH, 0.28);
+  const tiles = _getVeggieTiles(veggieType);
+  _drawTile(ctx, tiles.top, px, py - tileSize, tileSize);
+  _drawTile(ctx, tiles.root, px, py, tileSize);
 }
 
 /** Big soft rolling hill silhouette drawn once behind the surface row - pure ambiance, no gameplay meaning. */

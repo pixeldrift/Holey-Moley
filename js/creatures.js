@@ -309,22 +309,20 @@ function drawWorm(ctx, s, t, middleSegments) {
   if (!wormSegmentSprites) return;
   const { head, mid, tail } = wormSegmentSprites;
   const tileSize = s * 48;
-  const segW = tileSize * 0.85;
-  const segH = segW * (head.naturalHeight / head.naturalWidth);
   const wiggle = Math.sin(t * 6) * 1.5 * s;
-  const totalW = segW * (2 + middleSegments);
+  const totalW = tileSize * (2 + middleSegments);
 
   ctx.save();
   ctx.rotate(Math.sin(t * 4) * 0.05);
   let x = -totalW / 2;
-  ctx.drawImage(tail, x, -segH / 2 + wiggle, segW, segH);
-  x += segW;
+  ctx.drawImage(tail, x, -tileSize / 2 + wiggle, tileSize, tileSize);
+  x += tileSize;
   for (let i = 0; i < middleSegments; i++) {
     const localWiggle = Math.sin(t * 6 + i * 1.3) * 1.5 * s;
-    ctx.drawImage(mid, x, -segH / 2 + localWiggle, segW, segH);
-    x += segW;
+    ctx.drawImage(mid, x, -tileSize / 2 + localWiggle, tileSize, tileSize);
+    x += tileSize;
   }
-  ctx.drawImage(head, x, -segH / 2 + wiggle, segW, segH);
+  ctx.drawImage(head, x, -tileSize / 2 + wiggle, tileSize, tileSize);
   ctx.restore();
 }
 
