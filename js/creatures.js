@@ -302,9 +302,9 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   ctx.restore();
 }
 
-// Built from a head + tail + 0-3 repeated middle segments, laid out head-first along the
-// facing direction (the caller already applies ctx.scale(c.facing,1), so "forward" is
-// always +x here) - gives worms a few different lengths instead of one fixed sprite.
+// Built from a head + 0-3 repeated middle segments + tail, always laid out head-on-the-left
+// to tail-on-the-right (matching the sheet's own col4=head..col6=tail ordering) - gives worms
+// a few different lengths instead of one fixed sprite.
 function drawWorm(ctx, s, t, middleSegments) {
   if (!wormSegmentSprites) return;
   const { head, mid, tail } = wormSegmentSprites;
@@ -315,14 +315,14 @@ function drawWorm(ctx, s, t, middleSegments) {
   ctx.save();
   ctx.rotate(Math.sin(t * 4) * 0.05);
   let x = -totalW / 2;
-  ctx.drawImage(tail, x, -tileSize / 2 + wiggle, tileSize, tileSize);
+  ctx.drawImage(head, x, -tileSize / 2 + wiggle, tileSize, tileSize);
   x += tileSize;
   for (let i = 0; i < middleSegments; i++) {
     const localWiggle = Math.sin(t * 6 + i * 1.3) * 1.5 * s;
     ctx.drawImage(mid, x, -tileSize / 2 + localWiggle, tileSize, tileSize);
     x += tileSize;
   }
-  ctx.drawImage(head, x, -tileSize / 2 + wiggle, tileSize, tileSize);
+  ctx.drawImage(tail, x, -tileSize / 2 + wiggle, tileSize, tileSize);
   ctx.restore();
 }
 
