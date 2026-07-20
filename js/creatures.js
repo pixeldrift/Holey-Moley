@@ -279,11 +279,21 @@ function lerp(a, b, t) {
 // Rendering - small, readable silhouettes for each critter type.
 // ---------------------------------------------------------------------------
 
+// Ants, termites, and beetles are floor-walkers (see the module doc comment above) - anchor
+// their feet to the bottom of their current cell instead of centering them in it, or their
+// small silhouettes float well above the visible ground line the way the mole's much bigger
+// legs don't. Each offset is the lowest point that type's own draw function reaches below its
+// own local origin (leg tips / body-ellipse bottom), at s=1 (48px tile).
+const FOOT_OFFSET = { ANT: 5, TERMITE: 4, BEETLE: 5 };
+
 export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   const t = nowMs / 1000;
   const s = tileSize / 48;
   const cx = screenX + tileSize / 2;
-  const cy = screenY + tileSize / 2;
+  const footOffset = FOOT_OFFSET[c.type];
+  // Worms burrow freely through open space rather than standing on a floor, so they stay
+  // centered in their cell.
+  const cy = footOffset != null ? screenY + tileSize - footOffset * s : screenY + tileSize / 2;
 
   ctx.save();
   ctx.translate(cx, cy);
