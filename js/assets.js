@@ -1,16 +1,24 @@
-// Sprite assets, cut from assets/../"Holey Moley Spritesheet.png" (see assets/ dir - each
-// file here is one already-extracted, already-trimmed piece of that sheet). Terrain bands
-// were additionally reprocessed into seamlessly-tileable swatches (see the offset+blend
-// preprocessing used to produce them) so they can be sampled the same way the old
-// procedurally-drawn swatches were: continuous world-space coordinates, no visible seams.
+// Sprite assets, cut directly from "Holey Moley Spritesheet.png" with no further processing
+// (no blur, no seamless-ification) - the terrain rows are already independently-tileable
+// 64x64 variants by design, so each material just needs several of them to pick between at
+// random per grid cell instead of one texture stretched everywhere.
+
+function terrainVariants(material) {
+  return [0, 1, 2, 3].map((i) => `assets/terrain_${material}_${i}.png`);
+}
 
 const SOURCES = {
-  dirtSoft: "assets/dirt_soft.png",
-  dirtMedium: "assets/dirt_medium.png",
-  dirtHard: "assets/dirt_hard.png",
-  rootBase: "assets/root_base.png",
-  rock: "assets/rock.png",
-  grassStrip: "assets/grass_strip.png",
+  terrainGrass: terrainVariants("grass"),
+  terrainSand: terrainVariants("sand"),
+  terrainSoil: terrainVariants("soil"),
+  terrainDirt: terrainVariants("dirt"),
+  terrainGravel: terrainVariants("gravel"),
+  terrainRock: terrainVariants("rock"),
+  rootOverlays: [
+    "assets/root_overlay_0.png",
+    "assets/root_overlay_1.png",
+    "assets/root_overlay_2.png",
+  ],
   treeTrunk: "assets/tree_trunk.png",
   bushDark: "assets/bush_dark.png",
   bushFlowering: "assets/bush_flowering.png",
@@ -19,7 +27,9 @@ const SOURCES = {
   flowerDaisyWhite: "assets/flower_daisy_white.png",
   flowerBellflower: "assets/flower_bellflower.png",
   carrot: "assets/carrot.png",
-  worm: "assets/worm.png",
+  wormHead: "assets/worm_head.png",
+  wormMid: "assets/worm_mid.png",
+  wormTail: "assets/worm_tail.png",
 };
 
 function loadImage(src) {
@@ -31,13 +41,18 @@ function loadImage(src) {
   });
 }
 
+async function loadValue(value) {
+  return Array.isArray(value) ? Promise.all(value.map(loadImage)) : loadImage(value);
+}
+
 let loaded = null;
 
-/** Resolves once every sprite is loaded, to a map of the same keys as SOURCES. */
+/** Resolves once every sprite is loaded, to a map of the same keys as SOURCES (arrays of
+ *  sources resolve to arrays of loaded images). */
 export function loadAssets() {
   if (loaded) return loaded;
   loaded = Promise.all(
-    Object.entries(SOURCES).map(async ([key, src]) => [key, await loadImage(src)])
+    Object.entries(SOURCES).map(async ([key, value]) => [key, await loadValue(value)])
   ).then((pairs) => Object.fromEntries(pairs));
   return loaded;
 }

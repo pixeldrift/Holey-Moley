@@ -9,11 +9,11 @@ import { FOOD_TYPES, CREATURE_STATS } from "./constants.js";
 
 const STEP_DURATION = 260;
 
-let wormSprite = null;
+let wormSegmentSprites = null; // { head, mid, tail }
 
 /** Must be called once with assets.js's loaded images before any drawCreature call. */
 export function initCreatureSprites(sprites) {
-  wormSprite = sprites.worm;
+  wormSegmentSprites = { head: sprites.wormHead, mid: sprites.wormMid, tail: sprites.wormTail };
 }
 
 class Creature {
@@ -34,6 +34,9 @@ class Creature {
     this._toRow = row;
     this._waitTimer = randomBetween(0, CREATURE_STATS[type].moveIntervalMs);
     this.hidden = false; // worms inside solid dirt aren't drawn
+    // Worms are built from a head + tail + 0-3 repeated middle segments, so they come out
+    // in a few different lengths instead of always looking identical.
+    this.wormMiddleSegments = type === "WORM" ? Math.floor(Math.random() * 4) : 0;
   }
 }
 
@@ -287,7 +290,7 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   ctx.scale(c.facing, 1);
 
   if (c.type === "WORM") {
-    drawWorm(ctx, s, t);
+    drawWorm(ctx, s, t, c.wormMiddleSegments);
   } else if (c.type === "ANT") {
     drawAnt(ctx, s, t, c.isBusy);
   } else if (c.type === "TERMITE") {
@@ -299,15 +302,29 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   ctx.restore();
 }
 
-function drawWorm(ctx, s, t) {
-  if (!wormSprite) return;
+// Built from a head + tail + 0-3 repeated middle segments, laid out head-first along the
+// facing direction (the caller already applies ctx.scale(c.facing,1), so "forward" is
+// always +x here) - gives worms a few different lengths instead of one fixed sprite.
+function drawWorm(ctx, s, t, middleSegments) {
+  if (!wormSegmentSprites) return;
+  const { head, mid, tail } = wormSegmentSprites;
   const tileSize = s * 48;
-  const dispW = tileSize * 3; // the worm sprite is drawn 3 tiles long, per the source art's own scale
-  const dispH = dispW * (wormSprite.naturalHeight / wormSprite.naturalWidth);
-  const wiggle = Math.sin(t * 6) * 2 * s;
+  const segW = tileSize * 0.85;
+  const segH = segW * (head.naturalHeight / head.naturalWidth);
+  const wiggle = Math.sin(t * 6) * 1.5 * s;
+  const totalW = segW * (2 + middleSegments);
+
   ctx.save();
   ctx.rotate(Math.sin(t * 4) * 0.05);
-  ctx.drawImage(wormSprite, -dispW / 2, -dispH / 2 + wiggle, dispW, dispH);
+  let x = -totalW / 2;
+  ctx.drawImage(tail, x, -segH / 2 + wiggle, segW, segH);
+  x += segW;
+  for (let i = 0; i < middleSegments; i++) {
+    const localWiggle = Math.sin(t * 6 + i * 1.3) * 1.5 * s;
+    ctx.drawImage(mid, x, -segH / 2 + localWiggle, segW, segH);
+    x += segW;
+  }
+  ctx.drawImage(head, x, -segH / 2 + wiggle, segW, segH);
   ctx.restore();
 }
 

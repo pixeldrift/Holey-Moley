@@ -204,7 +204,8 @@ export class Game {
     const originY = viewH / 2 - camera.y;
 
     // Pure-scenery rolling hills behind the surface line - not a tile, not interactive.
-    drawBackgroundHills(ctx, viewW, viewH, originX, originY + this.map.surfaceRow * TILE_SIZE);
+    // Ground line is the BOTTOM of the grass tile (grass art fills the whole cell).
+    drawBackgroundHills(ctx, viewW, viewH, originX, originY + (this.map.surfaceRow + 1) * TILE_SIZE);
 
     const startCol = Math.max(0, Math.floor(-originX / TILE_SIZE) - 1);
     const endCol = Math.min(this.map.width - 1, Math.ceil((viewW - originX) / TILE_SIZE) + 1);
