@@ -2,8 +2,8 @@ import { TileMap, TILE } from "./tiles.js";
 import { Mole, drawMole } from "./mole.js";
 import { InputController } from "./input.js";
 import { HUD } from "./hud.js";
-import { CreatureManager, drawCreature } from "./creatures.js";
-import { drawTerrainTile, drawBackgroundHills } from "./textures.js";
+import { CreatureManager, drawCreature, initCreatureSprites } from "./creatures.js";
+import { drawTerrainTile, drawBackgroundHills, drawSurfaceDecorations, initTextures } from "./textures.js";
 import { Profile } from "./profile.js";
 
 const TILE_SIZE = 48;
@@ -16,9 +16,11 @@ const SKY_ROWS = 3;
 const SURFACE_Y_BIAS = TILE_SIZE * 0.32;
 
 export class Game {
-  constructor(canvas) {
+  constructor(canvas, sprites) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
+    initTextures(sprites);
+    initCreatureSprites(sprites);
     this.hud = new HUD();
     this.profile = new Profile();
     this.state = "menu"; // menu | playing | paused
@@ -218,6 +220,8 @@ export class Game {
         drawTerrainTile(ctx, this.map, tile, col, row, x, y, TILE_SIZE);
       }
     }
+
+    drawSurfaceDecorations(ctx, this.map, startCol, endCol, originX, originY, TILE_SIZE);
 
     // Creatures (culled to viewport, hidden while buried inside solid dirt).
     for (const c of this.creatures.list) {

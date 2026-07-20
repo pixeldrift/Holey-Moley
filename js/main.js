@@ -1,4 +1,6 @@
 import { Game } from "./game.js";
+import { loadAssets } from "./assets.js";
 
 const canvas = document.getElementById("game");
-new Game(canvas);
+const sprites = await loadAssets();
+new Game(canvas, sprites);

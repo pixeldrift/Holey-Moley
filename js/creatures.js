@@ -9,6 +9,13 @@ import { FOOD_TYPES, CREATURE_STATS } from "./constants.js";
 
 const STEP_DURATION = 260;
 
+let wormSprite = null;
+
+/** Must be called once with assets.js's loaded images before any drawCreature call. */
+export function initCreatureSprites(sprites) {
+  wormSprite = sprites.worm;
+}
+
 class Creature {
   constructor(type, col, row) {
     this.type = type;
@@ -293,18 +300,15 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
 }
 
 function drawWorm(ctx, s, t) {
-  const wiggle = Math.sin(t * 8) * 2 * s;
-  ctx.strokeStyle = "#d98a9a";
-  ctx.lineWidth = 4 * s;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(-8 * s, wiggle);
-  ctx.quadraticCurveTo(0, -wiggle, 8 * s, wiggle);
-  ctx.stroke();
-  ctx.fillStyle = "#c96c80";
-  ctx.beginPath();
-  ctx.arc(8 * s, wiggle, 2.2 * s, 0, Math.PI * 2);
-  ctx.fill();
+  if (!wormSprite) return;
+  const tileSize = s * 48;
+  const dispW = tileSize * 3; // the worm sprite is drawn 3 tiles long, per the source art's own scale
+  const dispH = dispW * (wormSprite.naturalHeight / wormSprite.naturalWidth);
+  const wiggle = Math.sin(t * 6) * 2 * s;
+  ctx.save();
+  ctx.rotate(Math.sin(t * 4) * 0.05);
+  ctx.drawImage(wormSprite, -dispW / 2, -dispH / 2 + wiggle, dispW, dispH);
+  ctx.restore();
 }
 
 function drawAnt(ctx, s, t, moving) {
