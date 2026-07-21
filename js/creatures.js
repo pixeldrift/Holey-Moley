@@ -12,8 +12,6 @@
 import { TILE } from "./tiles.js";
 import { FOOD_TYPES, CREATURE_STATS } from "./constants.js";
 
-const STEP_DURATION = 260;
-
 let wormSegmentSprites = null; // { head, mid, tail }
 
 /** Must be called once with assets.js's loaded images before any drawCreature call. */
@@ -32,7 +30,7 @@ class Creature {
     this.alive = true;
     this.isBusy = false;
     this._elapsed = 0;
-    this._duration = STEP_DURATION;
+    this._duration = CREATURE_STATS[type].moveIntervalMs; // overwritten by the first real step
     this._fromCol = col;
     this._fromRow = row;
     this._toCol = col;
@@ -160,6 +158,11 @@ export class CreatureManager {
     }
   }
 
+  // `interval` (the per-type moveIntervalMs/chaseIntervalMs) is the time to glide across one
+  // tile, i.e. speed. waitTimer is left at 0 - once this glide finishes, the creature is
+  // immediately eligible to decide and start its next step (same frame, since waitTimer is
+  // only checked/decremented while not busy), so consecutive tiles in the same direction glide
+  // through the boundary at constant speed instead of gliding, stopping, then gliding again.
   _beginStep(c, toCol, toRow, interval) {
     c.facing = toCol > c.col ? 1 : toCol < c.col ? -1 : c.facing;
     c._fromCol = c.col;
@@ -167,9 +170,9 @@ export class CreatureManager {
     c._toCol = toCol;
     c._toRow = toRow;
     c._elapsed = 0;
-    c._duration = STEP_DURATION;
+    c._duration = interval;
     c.isBusy = true;
-    c._waitTimer = interval;
+    c._waitTimer = 0;
   }
 
   _stepWorm(c) {
@@ -225,8 +228,8 @@ export class CreatureManager {
         c.travelDx = dir;
         c._fromCol = c.col; c._fromRow = c.row;
         c._toCol = nc; c._toRow = nr;
-        c._elapsed = 0; c._duration = STEP_DURATION; c.isBusy = true;
-        c._waitTimer = stats.chaseIntervalMs;
+        c._elapsed = 0; c._duration = stats.chaseIntervalMs; c.isBusy = true;
+        c._waitTimer = 0;
         c._attacking = true;
         return;
       }
