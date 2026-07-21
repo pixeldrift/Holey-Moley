@@ -88,6 +88,7 @@ const ANT_SPAWN_EXCLUSION = 7; // tiles from the mole's start column ants won't 
 const ANT_SURFACE_TURN_CHANCE = 0.1; // ~1-in-10 chance per tile to turn back while on open ground
 const ANT_CORNER_TURN_CHANCE = 0.25; // chance to turn back instead of following a real corner
 const ANT_OFFSCREEN_MARGIN = 10; // tiles beyond the mole's column considered safely offscreen
+const WORM_TURN_CHANCE = 0.25; // chance per move to turn instead of continuing straight
 
 export class CreatureManager {
   constructor(map, moleStartCol) {
@@ -218,15 +219,24 @@ export class CreatureManager {
     return map.hasFloorBelow(col, row);
   }
 
-  // A worm keeps crawling in whatever direction it's already headed, the same way a real worm
-  // (or classic Snake) doesn't wander at random - it only changes direction when the way
-  // forward is blocked. It can never reverse straight back the way it came: the segment right
-  // behind its head already occupies that cell, so doubling back would overlap its own body.
-  // Blocked-and-can't-turn-either just means it's stuck for now and waits.
+  // A worm mostly keeps crawling in whatever direction it's already headed, the same way a
+  // real worm (or classic Snake) doesn't constantly zigzag - but every move has a WORM_TURN_
+  // CHANCE odds of turning onto one of the two perpendicular directions instead. It can never
+  // reverse straight back the way it came: the segment right behind its head already occupies
+  // that cell, so doubling back would overlap its own body. Whichever choice isn't available
+  // (a turn when the dice say turn, or straight-ahead otherwise) falls back to the other,
+  // and if neither is open at all, it's stuck for now and waits.
   _pickWormDirection(c) {
+    const turns = shuffled([[-c.wormDy, c.wormDx], [c.wormDy, -c.wormDx]]);
+
+    if (Math.random() < WORM_TURN_CHANCE) {
+      for (const [dx, dy] of turns) {
+        if (this._wormDirValid(c, dx, dy)) return [dx, dy];
+      }
+    }
+
     if (this._wormDirValid(c, c.wormDx, c.wormDy)) return [c.wormDx, c.wormDy];
 
-    const turns = shuffled([[-c.wormDy, c.wormDx], [c.wormDy, -c.wormDx]]);
     for (const [dx, dy] of turns) {
       if (this._wormDirValid(c, dx, dy)) return [dx, dy];
     }
