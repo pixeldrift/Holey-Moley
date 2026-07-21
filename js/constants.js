@@ -16,6 +16,7 @@ export const FOOD_TYPES = {
   CARROT: { kind: "produce", energy: 14, score: 8, nibbleDuration: 700, slowFactor: 2 },
   BEET: { kind: "produce", energy: 18, score: 10, nibbleDuration: 900, slowFactor: 2.6 },
   TURNIP: { kind: "produce", energy: 16, score: 9, nibbleDuration: 800, slowFactor: 2.3 },
+  CABBAGE: { kind: "produce", energy: 20, score: 11, nibbleDuration: 950, slowFactor: 2.8 },
   ANT: { kind: "creature", energy: 10, score: 12, nibbleDuration: 300, slowFactor: 0.9, damage: 9 },
   TERMITE: { kind: "creature", energy: 8, score: 10, nibbleDuration: 300, slowFactor: 0.9 },
   BEETLE: { kind: "creature", energy: 12, score: 14, nibbleDuration: 350, slowFactor: 1 },
@@ -27,6 +28,7 @@ export const FOOD_ID = {
   CARROT: 2,
   BEET: 3,
   TURNIP: 4,
+  CABBAGE: 5,
 };
 
 export const FOOD_ID_TO_TYPE = {
@@ -34,6 +36,7 @@ export const FOOD_ID_TO_TYPE = {
   [FOOD_ID.CARROT]: "CARROT",
   [FOOD_ID.BEET]: "BEET",
   [FOOD_ID.TURNIP]: "TURNIP",
+  [FOOD_ID.CABBAGE]: "CABBAGE",
 };
 
 export const CREATURE_STATS = {

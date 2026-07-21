@@ -31,15 +31,14 @@ export function initTextures(loadedSprites) {
     gravel: sprites.terrainGravel,
     rock: sprites.terrainRock,
   };
-  // daisy_yellow is a single tile with no exposed roots; the other three are a top+root
-  // pair of tiles, same shape as the carrot below.
-  flowerSprites = [
-    { top: sprites.flowerDaisyYellow, root: null },
-    { top: sprites.flowerConeflowerTop, root: sprites.flowerConeflowerRoot },
-    { top: sprites.flowerDaisyWhiteTop, root: sprites.flowerDaisyWhiteRoot },
-    { top: sprites.flowerBellflowerTop, root: sprites.flowerBellflowerRoot },
+  // Flowers are single tiles now - the sheet no longer pairs them with their own root art
+  // (dedicated, randomized root tiles are used for the ROOT terrain type instead).
+  flowerSprites = sprites.flowers;
+  // Bushes keep a small root sprig of their own, drawn one row down, same shape as a tree.
+  bushSprites = [
+    { top: sprites.bush01, root: sprites.bush01Root },
+    { top: sprites.bush02, root: sprites.bush02Root },
   ];
-  bushSprites = [sprites.bushDark, sprites.bushFlowering];
 }
 
 function hashTile(col, row) {
@@ -205,61 +204,35 @@ function _drawTreeBase(ctx, col, px, py, tileSize) {
 
 function _drawBush(ctx, col, px, py, tileSize) {
   const rng = mulberry32(col * 7639 + 11);
-  const img = bushSprites[Math.floor(rng() * bushSprites.length)];
-  _drawTile(ctx, img, px, py, tileSize);
+  const spec = bushSprites[Math.floor(rng() * bushSprites.length)];
+  _drawTile(ctx, spec.top, px, py, tileSize);
+  _drawTile(ctx, spec.root, px, py + tileSize, tileSize);
 }
 
 function _drawFlower(ctx, col, px, py, tileSize) {
   const rng = mulberry32(col * 26113 + 5);
-  const spec = flowerSprites[Math.floor(rng() * flowerSprites.length)];
-  _drawTile(ctx, spec.top, px, py, tileSize);
-  if (spec.root) _drawTile(ctx, spec.root, px, py + tileSize, tileSize);
+  const img = flowerSprites[Math.floor(rng() * flowerSprites.length)];
+  _drawTile(ctx, img, px, py, tileSize);
 }
 
-const VEGGIE_TINT = {
-  CARROT: null,
-  BEET: "rgba(107,58,130,0.45)",
-  TURNIP: "rgba(230,225,215,0.5)",
-};
-
-let tintedVeggieCache = null;
-
-// BEET/TURNIP reuse the carrot art with a tint, applied to both the top and root tiles.
-// Tinting has to happen on an isolated offscreen copy of just the sprite - using source-atop
-// directly on the main canvas would composite against whatever's already painted there (sky,
-// dirt), washing out a whole rectangle instead of just the carrot's own silhouette. Built once
-// per type and cached.
-function _tintTile(img, tint) {
-  const c = document.createElement("canvas");
-  c.width = img.naturalWidth;
-  c.height = img.naturalHeight;
-  const cctx = c.getContext("2d");
-  cctx.drawImage(img, 0, 0);
-  cctx.globalCompositeOperation = "source-atop";
-  cctx.fillStyle = tint;
-  cctx.fillRect(0, 0, c.width, c.height);
-  return c;
-}
-
+// Carrot/beet/turnip each have their own dedicated top (greens) + bottom (bulb/root) art now -
+// no more tinting a shared carrot sprite. Cabbage is a single image (a whole head, no separate
+// underground part) drawn in the same row as the other veggies' bottoms, right where its food
+// tile actually is.
 function _getVeggieTiles(veggieType) {
-  const tint = VEGGIE_TINT[veggieType];
-  if (!tint) return { top: sprites.carrotTop, root: sprites.carrotRoot };
-  tintedVeggieCache ||= {};
-  if (!tintedVeggieCache[veggieType]) {
-    tintedVeggieCache[veggieType] = {
-      top: _tintTile(sprites.carrotTop, tint),
-      root: _tintTile(sprites.carrotRoot, tint),
-    };
+  switch (veggieType) {
+    case "BEET": return { top: sprites.beetTop, bottom: sprites.beetBottom };
+    case "TURNIP": return { top: sprites.turnipTop, bottom: sprites.turnipBottom };
+    case "CABBAGE": return { top: null, bottom: sprites.cabbage };
+    default: return { top: sprites.carrotTop, bottom: sprites.carrotBottom };
   }
-  return tintedVeggieCache[veggieType];
 }
 
-// The carrot's greens (top) and body (root) are two plain adjacent tiles, same as the rooted
-// flowers - greens in the surface row cell, body one row down where the food tile actually is.
+// Greens (top) sit in the surface row cell, body one row down where the food tile actually is.
 function _drawVeggieGreens(ctx, col, px, py, tileSize, veggieType) {
   const tiles = _getVeggieTiles(veggieType);
-  _drawTile(ctx, tiles.top, px, py, tileSize);
-  _drawTile(ctx, tiles.root, px, py + tileSize, tileSize);
+  if (tiles.top) _drawTile(ctx, tiles.top, px, py, tileSize);
+  _drawTile(ctx, tiles.bottom, px, py + tileSize, tileSize);
 }
 
 /** Big soft rolling hill silhouette drawn once behind the surface row - pure ambiance, no gameplay meaning. */

@@ -1,12 +1,15 @@
 // Sprite assets, cut directly from "Holey Moley Spritesheet.png" as raw, untrimmed 64x64
-// crops on the sheet's native grid - every source below is one grid cell (or, for the head/
-// root pairs and worm segments, a run of adjacent cells), always starting at (0,0) and always
-// at (col*64, row*64). No content-bbox trimming, no scaling, no fractional anchoring: sprites
-// that span multiple tiles (flower top+root, carrot top+root, worm head/mid/tail) are just
-// several full 64x64 cells meant to be drawn edge-to-edge, exactly like the terrain variants.
+// crops on the sheet's native grid - every source below is one grid cell, always starting at
+// (0,0) and always at (col*64, row*64). No content-bbox trimming, no scaling, no fractional
+// anchoring: sprites that span multiple tiles (veggie top+bottom, worm segments) are just
+// several full 64x64 cells meant to be drawn edge-to-edge.
 
 function terrainVariants(material) {
   return [0, 1, 2, 3].map((i) => `assets/terrain_${material}_${i}.png`);
+}
+
+function frames(prefix, count) {
+  return Array.from({ length: count }, (_, i) => `assets/${prefix}_${i}.png`);
 }
 
 const SOURCES = {
@@ -16,28 +19,40 @@ const SOURCES = {
   terrainDirt: terrainVariants("dirt"),
   terrainGravel: terrainVariants("gravel"),
   terrainRock: terrainVariants("rock"),
-  // The randomized ROOT-tile overlay reuses the same root art drawn beneath the three rooted
-  // flowers below - no separate crop needed.
+  // Dedicated, randomized ROOT-tile overlay art (no longer reusing flower art).
   rootOverlays: [
-    "assets/flower_coneflower_root.png",
-    "assets/flower_daisy_white_root.png",
-    "assets/flower_bellflower_root.png",
+    "assets/root_overlay_0.png",
+    "assets/root_overlay_1.png",
+    "assets/root_overlay_2.png",
+    "assets/root_overlay_3.png",
   ],
   treeTrunk: "assets/tree_trunk.png",
-  bushDark: "assets/bush_dark.png",
-  bushFlowering: "assets/bush_flowering.png",
-  flowerDaisyYellow: "assets/flower_daisy_yellow.png",
-  flowerConeflowerTop: "assets/flower_coneflower_top.png",
-  flowerConeflowerRoot: "assets/flower_coneflower_root.png",
-  flowerDaisyWhiteTop: "assets/flower_daisy_white_top.png",
-  flowerDaisyWhiteRoot: "assets/flower_daisy_white_root.png",
-  flowerBellflowerTop: "assets/flower_bellflower_top.png",
-  flowerBellflowerRoot: "assets/flower_bellflower_root.png",
+  bush01: "assets/bush_01.png",
+  bush01Root: "assets/bush_01_root.png",
+  bush02: "assets/bush_02.png",
+  bush02Root: "assets/bush_02_root.png",
+  // Single-tile flowers - the sheet no longer pairs these with their own root art (see
+  // rootOverlays above for the generic root tiles used by the ROOT terrain type instead).
+  flowers: [
+    "assets/flower_01.png",
+    "assets/flower_02.png",
+    "assets/flower_03.png",
+    "assets/flower_04.png",
+  ],
   carrotTop: "assets/carrot_top.png",
-  carrotRoot: "assets/carrot_root.png",
+  carrotBottom: "assets/carrot_bottom.png",
+  beetTop: "assets/beet_top.png",
+  beetBottom: "assets/beet_bottom.png",
+  turnipTop: "assets/turnip_top.png",
+  turnipBottom: "assets/turnip_bottom.png",
+  cabbage: "assets/cabbage.png",
   wormHead: "assets/worm_head.png",
   wormMid: "assets/worm_mid.png",
   wormTail: "assets/worm_tail.png",
+  wormHeadBend: "assets/worm_head_bend.png",
+  wormMidBend: "assets/worm_mid_bend.png",
+  wormTailBend: "assets/worm_tail_bend.png",
+  antWalk: frames("ant", 6),
 };
 
 function loadImage(src) {

@@ -111,7 +111,7 @@ export class TileMap {
    *  draw its greens poking up above ground as a permanent dig hint. */
   getRootVeggieGreensType(col) {
     const type = FOOD_ID_TO_TYPE[this.getFoodId(col, this.surfaceRow + 1)];
-    return type === "CARROT" || type === "BEET" || type === "TURNIP" ? type : null;
+    return type === "CARROT" || type === "BEET" || type === "TURNIP" || type === "CABBAGE" ? type : null;
   }
 
   setTile(x, y, tile) {
@@ -194,7 +194,7 @@ export class TileMap {
     // Root vegetables - always in the tile directly under the grass, so digging one tile
     // down from the surface is enough to reach them. Their greens render above ground
     // regardless (see textures.js), giving the player a permanent hint of where they are.
-    const rootVeggies = [FOOD_ID.CARROT, FOOD_ID.BEET, FOOD_ID.TURNIP];
+    const rootVeggies = [FOOD_ID.CARROT, FOOD_ID.BEET, FOOD_ID.TURNIP, FOOD_ID.CABBAGE];
     const veggieRow = this.surfaceRow + 1;
     for (let x = 0; x < this.width; x++) {
       const tile = this.getTile(x, veggieRow);

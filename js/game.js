@@ -2,7 +2,7 @@ import { TileMap, TILE } from "./tiles.js";
 import { Mole, drawMole } from "./mole.js";
 import { InputController } from "./input.js";
 import { HUD } from "./hud.js";
-import { CreatureManager, drawCreature, initCreatureSprites } from "./creatures.js";
+import { CreatureManager, drawCreature, drawWorm, initCreatureSprites } from "./creatures.js";
 import { drawTerrainTile, drawBackgroundHills, drawSurfaceDecorations, initTextures } from "./textures.js";
 import { Profile } from "./profile.js";
 
@@ -222,11 +222,17 @@ export class Game {
 
     // Creatures (culled to viewport, hidden while buried inside solid dirt).
     for (const c of this.creatures.list) {
-      const checkCol = Math.round(c.px);
-      const checkRow = Math.round(c.py);
-      if (c.type === "WORM" && this.map.getTile(checkCol, checkRow).solid) continue;
       const x = originX + c.px * TILE_SIZE;
       const y = originY + c.py * TILE_SIZE;
+      if (c.type === "WORM") {
+        // Worms are a multi-cell trail, not one point - cull generously around the head
+        // (worms are at most 5 tiles long) and let drawWorm hide any individual segment
+        // that's actually buried in solid dirt.
+        const margin = TILE_SIZE * 6;
+        if (x < -margin || x > viewW + margin || y < -margin || y > viewH + margin) continue;
+        drawWorm(ctx, this.map, c, originX, originY, TILE_SIZE, now);
+        continue;
+      }
       if (x < -TILE_SIZE || x > viewW + TILE_SIZE || y < -TILE_SIZE || y > viewH + TILE_SIZE) continue;
       drawCreature(ctx, c, x, y, TILE_SIZE, now);
     }

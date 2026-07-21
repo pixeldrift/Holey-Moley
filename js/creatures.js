@@ -12,11 +12,16 @@
 import { TILE } from "./tiles.js";
 import { FOOD_TYPES, CREATURE_STATS } from "./constants.js";
 
-let wormSegmentSprites = null; // { head, mid, tail }
+let wormSegmentSprites = null; // { head, mid, tail, headBend, midBend, tailBend }
+let antWalkSprites = null; // [img, img, ...] walk-cycle frames
 
 /** Must be called once with assets.js's loaded images before any drawCreature call. */
 export function initCreatureSprites(sprites) {
-  wormSegmentSprites = { head: sprites.wormHead, mid: sprites.wormMid, tail: sprites.wormTail };
+  wormSegmentSprites = {
+    head: sprites.wormHead, mid: sprites.wormMid, tail: sprites.wormTail,
+    headBend: sprites.wormHeadBend, midBend: sprites.wormMidBend, tailBend: sprites.wormTailBend,
+  };
+  antWalkSprites = sprites.antWalk;
 }
 
 class Creature {
@@ -36,10 +41,20 @@ class Creature {
     this._toCol = col;
     this._toRow = row;
     this._waitTimer = randomBetween(0, CREATURE_STATS[type].moveIntervalMs);
-    this.hidden = false; // worms inside solid dirt aren't drawn
     // Worms are built from a head + tail + 0-3 repeated middle segments, so they come out
-    // in a few different lengths instead of always looking identical.
-    this.wormMiddleSegments = type === "WORM" ? Math.floor(Math.random() * 4) : 0;
+    // in a few different lengths instead of always looking identical. Each one occupies its
+    // own real grid cell (a trail of past head positions, Snake-style) rather than just being
+    // drawn in a line from a single point, so the body can actually bend around corners.
+    // trail[0] is the head; trail is the target/settled shape, prevTrail is what it animates
+    // from over the current step (see drawWorm).
+    if (type === "WORM") {
+      this.wormMiddleSegments = Math.floor(Math.random() * 4);
+      const totalSegments = 2 + this.wormMiddleSegments;
+      this.trail = Array.from({ length: totalSegments }, () => ({ col, row }));
+      this.prevTrail = Array.from({ length: totalSegments }, () => ({ col, row }));
+    } else {
+      this.wormMiddleSegments = 0;
+    }
 
     // Ants cling to whatever surface they're walking on rather than always walking
     // horizontally on a floor. wallD{x,y} is the unit vector from the ant to the solid
@@ -164,6 +179,15 @@ export class CreatureManager {
   // only checked/decremented while not busy), so consecutive tiles in the same direction glide
   // through the boundary at constant speed instead of gliding, stopping, then gliding again.
   _beginStep(c, toCol, toRow, interval) {
+    if (c.type === "WORM") {
+      // Shift the trail: the new head position leads, every other segment follows one step
+      // behind (each one moving into wherever the segment ahead of it used to be) - exactly
+      // how a Snake body advances. prevTrail is snapshotted here so drawWorm can interpolate
+      // every segment smoothly over the step, not just the head.
+      c.prevTrail = c.trail.map((p) => ({ ...p }));
+      c.trail.pop();
+      c.trail.unshift({ col: toCol, row: toRow });
+    }
     c.facing = toCol > c.col ? 1 : toCol < c.col ? -1 : c.facing;
     c._fromCol = c.col;
     c._fromRow = c.row;
@@ -400,12 +424,14 @@ function lerp(a, b, t) {
 // Rendering - small, readable silhouettes for each critter type.
 // ---------------------------------------------------------------------------
 
-// Ants, termites, and beetles are floor-walkers (see the module doc comment above) - anchor
-// their feet to the bottom of their current cell instead of centering them in it, or their
-// small silhouettes float well above the visible ground line the way the mole's much bigger
-// legs don't. Each offset is the lowest point that type's own draw function reaches below its
-// own local origin (leg tips / body-ellipse bottom), at s=1 (48px tile).
-const FOOT_OFFSET = { ANT: 5, TERMITE: 4, BEETLE: 5 };
+// Termites and beetles are floor-walkers (see the module doc comment above) - anchor their
+// feet to the bottom of their current cell instead of centering them in it, or their small
+// silhouettes float well above the visible ground line the way the mole's much bigger legs
+// don't. Each offset is the lowest point that type's own draw function reaches below its own
+// local origin (leg tips / body-ellipse bottom), at s=1 (48px tile). Ants use real sprite art
+// instead (see drawAnt) whose feet already sit at the bottom edge of its own 64x64 cell, so no
+// offset is needed for them.
+const FOOT_OFFSET = { TERMITE: 4, BEETLE: 5 };
 
 // Rotation that puts local "down" (feet) onto the wall the ant is clinging to, keyed by
 // wallDx,wallDy. Derived from rotate(0,1,angle) = wallSide for each of the 4 cardinal cases.
@@ -430,12 +456,14 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
     // Flip so the ant visually walks the direction it's actually traveling, whichever surface
     // it's currently on - "local right" (unflipped) is the wall direction rotated 90deg CCW.
     const localRightDx = c.wallDy, localRightDy = -c.wallDx;
-    const flip = (c.travelDx === localRightDx && c.travelDy === localRightDy) ? 1 : -1;
-    ctx.scale(flip, 1);
-    ctx.translate(0, tileSize / 2 - FOOT_OFFSET.ANT * s);
-    drawAnt(ctx, s, t, c.isBusy);
+    const facingLocalRight = c.travelDx === localRightDx && c.travelDy === localRightDy;
+    // The sprite's own art faces left natively, opposite of the "unflipped = local right"
+    // convention above, so the mirror condition is inverted from the usual flip=1/-1 pattern.
+    ctx.scale(facingLocalRight ? -1 : 1, 1);
+    drawAnt(ctx, tileSize, t, c.isBusy);
   } else if (c.type === "WORM") {
-    drawWorm(ctx, s, t, c.wormMiddleSegments);
+    // Worms are drawn separately (see the exported drawWorm below) - each body segment lives
+    // in its own real grid cell, so it needs the camera origin rather than one shared point.
   } else {
     // Termites/beetles are currently disabled (not spawned) but keep their floor-anchored
     // rendering intact for when they're re-enabled.
@@ -449,78 +477,116 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   ctx.restore();
 }
 
-// Built from a head + 0-3 repeated middle segments + tail, always laid out head-on-the-left
-// to tail-on-the-right (matching the sheet's own col4=head..col6=tail ordering) - gives worms
-// a few different lengths instead of one fixed sprite.
-//
 // Regular worms render at half the sheet's native 64px tile size - the sprite sheet itself is
 // left untouched at full size so a later "boss worm" can reuse the same art at WORM_DISPLAY_SCALE
 // 1 (or higher) for a dramatically bigger creature.
 const WORM_DISPLAY_SCALE = 0.5;
 
-// Inchworm gait: compress the body toward the head (tail scoots forward, head fixed), then
-// extend it back out from the tail (head reaches forward, tail fixed) - alternating which end
-// stays put over one cycle is what reads as "inching" rather than just squashing in place.
-const WORM_INCH_CYCLE_MS = 1000;
-const WORM_INCH_MIN_SCALE = 0.8;
-
-function drawWorm(ctx, s, t, middleSegments) {
-  if (!wormSegmentSprites) return;
-  const { head, mid, tail } = wormSegmentSprites;
-  const tileSize = s * 48 * WORM_DISPLAY_SCALE;
-  const totalSegments = 2 + middleSegments;
-
-  const half = WORM_INCH_CYCLE_MS / 2;
-  const cycleMs = (t * 1000) % WORM_INCH_CYCLE_MS;
-  const compressing = cycleMs < half;
-  const local = easeInOutQuad((compressing ? cycleMs : cycleMs - half) / half);
-  const scaleX = compressing
-    ? lerp(1, WORM_INCH_MIN_SCALE, local)
-    : lerp(WORM_INCH_MIN_SCALE, 1, local);
-
-  const restW = tileSize * totalSegments;
-  const headX = -restW / 2; // fixed while compressing
-  const tailXAtMin = headX + (totalSegments - 1) * tileSize * WORM_INCH_MIN_SCALE; // where the tail lands at full compression; fixed while extending
-
-  ctx.save();
-  for (let i = 0; i < totalSegments; i++) {
-    const img = i === 0 ? head : i === totalSegments - 1 ? tail : mid;
-    const x = compressing
-      ? headX + i * tileSize * scaleX
-      : tailXAtMin - (totalSegments - 1 - i) * tileSize * scaleX;
-    ctx.drawImage(img, x, -tileSize / 2, tileSize, tileSize);
-  }
-  ctx.restore();
+// Cardinal direction name, used to key the bend-orientation lookup below.
+function _dirName(dx, dy) {
+  if (dx === 1) return "E";
+  if (dx === -1) return "W";
+  if (dy === 1) return "S";
+  return "N";
 }
 
-function easeInOutQuad(t) {
-  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+// The unrotated straight sprites (head/mid/tail) all face West (tapered/leading end pointing
+// left) - see js/assets.js's extraction notes. Rotates that West-facing art to point `dx,dy`
+// instead: canvas rotate(θ) sends local West (-1,0) to (-cosθ,-sinθ), so θ = atan2(-dy,-dx).
+function _straightAngle(dx, dy) {
+  return Math.atan2(-dy, -dx);
 }
 
-function drawAnt(ctx, s, t, moving) {
-  const bob = moving ? Math.sin(t * 30) * 1 * s : 0;
-  ctx.translate(0, bob);
-  ctx.strokeStyle = "#241a12";
-  ctx.lineWidth = 1 * s;
-  for (let i = -1; i <= 1; i++) {
-    ctx.beginPath();
-    ctx.moveTo(i * 3 * s, 0);
-    ctx.lineTo(i * 3 * s + (moving ? Math.sin(t * 20 + i) * 3 * s : 3 * s), 5 * s);
-    ctx.stroke();
+// The unrotated middle_bend sprite connects East and South (a quarter-pipe elbow). Rotating it
+// 90deg at a time cycles it through the other 3 corner orientations - this table was derived
+// by hand from that canonical shape and verified by rendering all 4 cases.
+const BEND_ANGLE_BY_PAIR = {
+  "E,S": 0,
+  "S,W": Math.PI / 2,
+  "N,W": Math.PI,
+  "E,N": (3 * Math.PI) / 2,
+};
+
+function _bendAngle(dxA, dyA, dxB, dyB) {
+  const key = [_dirName(dxA, dyA), _dirName(dxB, dyB)].sort().join(",");
+  return BEND_ANGLE_BY_PAIR[key] ?? 0;
+}
+
+// A path endpoint (the very front or back of the body) only ever has ONE neighboring link, so
+// geometrically it can never be a corner - only interior (middle) segments, which sit between
+// two links, can bend. Head and tail are always the plain straight sprites; only middles check
+// whether their surrounding two links agree (straight) or turn 90 degrees (bend), and if so,
+// which of the 4 corner orientations to rotate the bend sprite to.
+function _wormSegmentArt(trail, i) {
+  const { head, mid, tail, headBend, midBend, tailBend } = wormSegmentSprites;
+  const n = trail.length;
+
+  if (i === 0) {
+    const dx = Math.sign(trail[0].col - trail[1].col);
+    const dy = Math.sign(trail[0].row - trail[1].row);
+    return { img: head, angle: _straightAngle(dx, dy) };
   }
-  ctx.fillStyle = "#1e1610";
-  ctx.beginPath();
-  ctx.ellipse(-4 * s, 0, 3 * s, 2.4 * s, 0, 0, Math.PI * 2);
-  ctx.ellipse(0, 0, 3.4 * s, 2.8 * s, 0, 0, Math.PI * 2);
-  ctx.ellipse(4.5 * s, -0.5 * s, 2.4 * s, 2 * s, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "#1e1610";
-  ctx.beginPath();
-  ctx.moveTo(6 * s, -2 * s);
-  ctx.lineTo(9 * s, -5 * s);
-  ctx.moveTo(6.5 * s, -1 * s);
-  ctx.lineTo(9.5 * s, -3 * s);
-  ctx.stroke();
+  if (i === n - 1) {
+    const dx = Math.sign(trail[i - 1].col - trail[i].col);
+    const dy = Math.sign(trail[i - 1].row - trail[i].row);
+    return { img: tail, angle: _straightAngle(dx, dy) };
+  }
+
+  // dirIn: direction traveling from the tail-ward neighbor into this segment.
+  // dirOut: direction traveling from this segment toward the head-ward neighbor.
+  const dirInDx = Math.sign(trail[i].col - trail[i + 1].col);
+  const dirInDy = Math.sign(trail[i].row - trail[i + 1].row);
+  const dirOutDx = Math.sign(trail[i - 1].col - trail[i].col);
+  const dirOutDy = Math.sign(trail[i - 1].row - trail[i].row);
+
+  if (dirInDx === dirOutDx && dirInDy === dirOutDy) {
+    return { img: mid, angle: _straightAngle(dirOutDx, dirOutDy) };
+  }
+  return { img: midBend, angle: _bendAngle(dirInDx, dirInDy, dirOutDx, dirOutDy) };
+}
+
+/**
+ * Worms occupy a real trail of grid cells (Snake-style) instead of just being drawn in a line
+ * from one point, so they need the camera origin rather than a single screen position -
+ * called directly by game.js instead of going through drawCreature. Each segment interpolates
+ * smoothly from its previous trail slot to its current one over the same step timing as the
+ * head's own movement (they all move in lockstep, one slot behind).
+ */
+export function drawWorm(ctx, map, c, originX, originY, tileSize, nowMs) {
+  if (!wormSegmentSprites || !c.trail) return;
+  const segSize = tileSize * WORM_DISPLAY_SCALE;
+  const t = c.isBusy ? Math.min(1, c._elapsed / c._duration) : 1;
+
+  for (let i = 0; i < c.trail.length; i++) {
+    const cur = c.trail[i];
+    const prev = c.prevTrail[i];
+    const col = lerp(prev.col, cur.col, t);
+    const row = lerp(prev.row, cur.row, t);
+
+    const cellCol = Math.round(col), cellRow = Math.round(row);
+    if (map.getTile(cellCol, cellRow).solid) continue; // buried in dirt - not drawn
+
+    const { img, angle } = _wormSegmentArt(c.trail, i);
+    const screenX = originX + col * tileSize + tileSize / 2;
+    const screenY = originY + row * tileSize + tileSize / 2;
+
+    ctx.save();
+    ctx.translate(screenX, screenY);
+    ctx.rotate(angle);
+    ctx.drawImage(img, -segSize / 2, -segSize / 2, segSize, segSize);
+    ctx.restore();
+  }
+}
+
+const ANT_WALK_FPS = 10; // walk-cycle playback speed while moving
+
+// The 6 walk-cycle frames already fill their own 64x64 cell with feet at the bottom edge, so
+// drawing the frame centered on the (already rotated) wall-relative origin lands it correctly
+// with no extra anchoring math.
+function drawAnt(ctx, tileSize, t, moving) {
+  if (!antWalkSprites) return;
+  const frame = moving ? Math.floor(t * ANT_WALK_FPS) % antWalkSprites.length : 0;
+  ctx.drawImage(antWalkSprites[frame], -tileSize / 2, -tileSize / 2, tileSize, tileSize);
 }
 
 function drawTermite(ctx, s, t, moving) {
