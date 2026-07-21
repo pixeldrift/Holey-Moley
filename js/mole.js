@@ -151,9 +151,15 @@ export class Mole {
 
     if (this.actionTarget) {
       this.actionElapsed += dt;
+      // Linear, constant-speed interpolation - an eased curve decelerates to a stop at every
+      // tile boundary, which is what made continuous holding of a direction read as a series
+      // of discrete hops instead of one smooth glide. requestMove() below already re-issues
+      // the next tile's action the instant this one completes (isBusy clears the same frame
+      // _completeAction runs), so back-to-back tiles in the same direction carry speed through
+      // the boundary seamlessly.
       const t = Math.min(1, this.actionElapsed / this.actionDuration);
-      this.px = lerp(this.col, this.actionTarget.col, easeInOutQuad(t));
-      this.py = lerp(this.row, this.actionTarget.row, easeInOutQuad(t));
+      this.px = lerp(this.col, this.actionTarget.col, t);
+      this.py = lerp(this.row, this.actionTarget.row, t);
 
       if (t >= 1) {
         this._completeAction();
@@ -254,9 +260,6 @@ function shade(hex, amt) {
   const g = clamp(((n >> 8) & 255) + 255 * amt);
   const b = clamp((n & 255) + 255 * amt);
   return `rgb(${r | 0},${g | 0},${b | 0})`;
-}
-function easeInOutQuad(t) {
-  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
 // ---------------------------------------------------------------------------
