@@ -42,12 +42,12 @@ class Creature {
     this._toRow = row;
     this._waitTimer = randomBetween(0, CREATURE_STATS[type].moveIntervalMs);
 
-    // Worms move in half-tile increments and only ever decide a new direction once the head
-    // is aligned back to a whole tile (see CreatureManager._tickWorm). trail holds one entry
-    // per body segment PLUS one hidden "ghost" slot past the tail, used only so the tail can
-    // tell which way it's arriving from - the same way every other segment does - without
-    // needing special-cased math. trail is the target/settled shape, prevTrail is what it
-    // animates from over the current tick (see drawWorm).
+    // Worms move in full half-tile increments, snapping directly from one position to the
+    // next (no glide/interpolation) and only ever deciding a new direction once the head is
+    // aligned back to a whole tile (see CreatureManager._tickWorm). trail holds one entry per
+    // body segment PLUS one hidden "ghost" slot past the tail, used only so the tail can tell
+    // which way it's arriving from - the same way every other segment does - without needing
+    // special-cased math.
     if (type === "WORM") {
       this.wormMiddleSegments = Math.floor(Math.random() * 4);
       const totalSegments = 2 + this.wormMiddleSegments;
@@ -57,7 +57,6 @@ class Creature {
       this.wormDy = 0;
       this._wormTurning = false;
       this.trail = Array.from({ length: totalSegments + 1 }, () => ({ col, row }));
-      this.prevTrail = Array.from({ length: totalSegments + 1 }, () => ({ col, row }));
     } else {
       this.wormMiddleSegments = 0;
     }
@@ -229,40 +228,25 @@ export class CreatureManager {
     return null;
   }
 
-  // Worms glide at half-tile resolution: a new direction can only be chosen while the head
-  // sits exactly on a whole tile. Turning costs one extra tick - a pure in-place pivot with no
-  // forward progress (see _beginWormPivot) - before the half-tile glides resume, which is what
-  // lets the head/mid/tail bend sprites sweep through the corner one at a time (see
-  // _wormSegmentArt and the module doc comment on drawWorm).
+  // Worms move by snapping directly from one half-tile position to the next - no smooth
+  // glide/interpolation, just a wait timer between discrete steps, like classic Snake. A new
+  // direction can only be chosen while the head sits exactly on a whole tile. Turning costs one
+  // extra tick - a pure in-place pivot with no forward progress - before half-tile steps resume,
+  // which is what lets the head/mid/tail bend sprites sweep through the corner one at a time
+  // (see _wormSegmentArt).
   _tickWorm(c, dt) {
     const stats = CREATURE_STATS.WORM;
-
-    if (c.isBusy) {
-      c._elapsed += dt;
-      if (c._elapsed >= c._duration) {
-        c.isBusy = false;
-        c.headCol = c.trail[0].col;
-        c.headRow = c.trail[0].row;
-        c.px = c.headCol;
-        c.py = c.headRow;
-      } else {
-        const t = c._elapsed / c._duration;
-        c.px = lerp(c.prevTrail[0].col, c.trail[0].col, t);
-        c.py = lerp(c.prevTrail[0].row, c.trail[0].row, t);
-      }
-      return;
-    }
+    const halfMs = stats.moveIntervalMs / 2;
 
     c._waitTimer -= dt;
     if (c._waitTimer > 0) return;
-
-    const halfMs = stats.moveIntervalMs / 2;
 
     if (c._wormTurning) {
       c._wormTurning = false;
       c.wormDx = c._pendingDx;
       c.wormDy = c._pendingDy;
-      this._beginWormHalfStep(c, halfMs);
+      this._advanceWorm(c);
+      c._waitTimer = halfMs;
       return;
     }
 
@@ -278,38 +262,28 @@ export class CreatureManager {
         c._pendingDx = dx;
         c._pendingDy = dy;
         c._wormTurning = true;
-        this._beginWormPivot(c, halfMs);
+        c._waitTimer = halfMs; // in-place pivot pause, same length as a real step
         return;
       }
     }
 
-    this._beginWormHalfStep(c, halfMs);
+    this._advanceWorm(c);
+    c._waitTimer = halfMs;
   }
 
-  _beginWormPivot(c, halfMs) {
-    c.prevTrail = c.trail.map((p) => ({ ...p }));
-    c._elapsed = 0;
-    c._duration = halfMs;
-    c.isBusy = true;
-    c._waitTimer = 0;
-  }
-
-  _beginWormHalfStep(c, halfMs) {
+  _advanceWorm(c) {
     const newCol = c.headCol + c.wormDx * 0.5;
     const newRow = c.headRow + c.wormDy * 0.5;
-    c.prevTrail = c.trail.map((p) => ({ ...p }));
     c.trail.pop();
     c.trail.unshift({ col: newCol, row: newRow });
     c.headCol = newCol;
     c.headRow = newRow;
+    c.px = newCol;
+    c.py = newRow;
     if (Number.isInteger(newCol) && Number.isInteger(newRow)) {
       c.col = newCol;
       c.row = newRow;
     }
-    c._elapsed = 0;
-    c._duration = halfMs;
-    c.isBusy = true;
-    c._waitTimer = 0;
   }
 
   _canWalkFloor(col, row) {
@@ -768,22 +742,19 @@ function _wormSegmentArt(c, i) {
 /**
  * Worms occupy a real trail of grid cells (Snake-style), so they need the camera origin
  * rather than a single screen position - called directly by game.js instead of going through
- * drawCreature. Segments are visible everywhere they're allowed to travel: overlaid on top of
- * solid dirt while burrowing, or resting on an open tunnel floor/the grass surface (see
- * CreatureManager._wormCanEnter) - never floating in open air.
+ * drawCreature. Each segment is drawn exactly at its settled half-tile position - no glide or
+ * scaling animation between steps, just a snap from one position to the next (see
+ * CreatureManager._tickWorm). Segments are visible everywhere they're allowed to travel:
+ * overlaid on top of solid dirt while burrowing, or resting on an open tunnel floor/the grass
+ * surface (see CreatureManager._wormCanEnter) - never floating in open air.
  */
-export function drawWorm(ctx, c, originX, originY, tileSize, nowMs) {
+export function drawWorm(ctx, c, originX, originY, tileSize) {
   if (!wormSegmentSprites || !c.trail) return;
   const segSize = tileSize * WORM_DISPLAY_SCALE;
   const segCount = c.trail.length - 1; // last slot is the hidden ghost, never drawn
-  const t = c.isBusy ? Math.min(1, c._elapsed / c._duration) : 1;
 
   for (let i = 0; i < segCount; i++) {
-    const cur = c.trail[i];
-    const prev = c.prevTrail[i];
-    const col = lerp(prev.col, cur.col, t);
-    const row = lerp(prev.row, cur.row, t);
-
+    const { col, row } = c.trail[i];
     const { img, angle, flip } = _wormSegmentArt(c, i);
     const screenX = originX + col * tileSize + tileSize / 2;
     const screenY = originY + row * tileSize + tileSize / 2;
