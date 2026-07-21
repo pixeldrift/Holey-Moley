@@ -59,7 +59,14 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
   const py = Math.round(y);
 
   if (tile === TILE.TUNNEL) {
-    _drawTunnel(ctx, col, row, px, py, tileSize);
+    _drawTunnel(ctx, map, col, row, px, py, tileSize);
+    return;
+  }
+
+  if (tile === TILE.SURFACE && !map.getTile(col, row + 1).solid) {
+    // Grass with nothing solid left underneath (the dirt below has been dug away) - there's
+    // no turf to stand on anymore, so render it as an open tunnel mouth instead.
+    _drawTunnel(ctx, map, col, row, px, py, tileSize);
     return;
   }
 
@@ -85,18 +92,25 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
   }
 }
 
-// The sheet has no cave/tunnel art - a flat fill with a few crisp (unblurred) darker flecks,
-// deterministic per tile so it doesn't shimmer.
-function _drawTunnel(ctx, col, row, px, py, tileSize) {
-  ctx.fillStyle = "#241a12";
-  ctx.fillRect(px, py, tileSize, tileSize);
-  ctx.fillStyle = "#150e09";
-  const h = hashTile(col, row);
-  for (let i = 0; i < 4; i++) {
-    const fx = px + ((h >> (i * 4)) % 11) * (tileSize / 12) + 2;
-    const fy = py + ((h >> (i * 4 + 2)) % 11) * (tileSize / 12) + 2;
-    ctx.fillRect(fx, fy, 2, 2);
+// The sheet has no dedicated cave/tunnel art - a dug-out cell is rendered as a darkened version
+// of whatever material used to be there (see tiles.js's tunnelOrigin tracking), not a flat
+// unrelated fill, so a tunnel through sand still reads as sand, just in shadow.
+function _darkenedMaterialDraw(ctx, variants, col, row, px, py, tileSize) {
+  if (variants) {
+    ctx.drawImage(pickVariant(variants, col, row), px, py, tileSize, tileSize);
+  } else {
+    ctx.fillStyle = "#3a2c1c";
+    ctx.fillRect(px, py, tileSize, tileSize);
   }
+  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+  ctx.fillRect(px, py, tileSize, tileSize);
+}
+
+function _drawTunnel(ctx, map, col, row, px, py, tileSize) {
+  const origin = map.getTunnelOrigin(col, row);
+  const material = MATERIAL_FOR_TILE[origin.id];
+  const variants = material ? materials[material] : null;
+  _darkenedMaterialDraw(ctx, variants, col, row, px, py, tileSize);
 }
 
 // The four points of a tile, in canvas order, used to build the triangular clip paths below.
@@ -121,12 +135,14 @@ function _solidTrianglePoints(cornerCut, corners) {
   }
 }
 
-// Renders a tile that's had one triangular half opened up by a diagonal dig: fill the whole
-// cell as tunnel first (that becomes the open half), then clip to the remaining solid
-// triangle and paint the material there - the boundary is a single straight 45 degree line,
+// Renders a tile that's had one triangular half opened up by a diagonal dig: darken the whole
+// cell first (that becomes the open half), then clip to the remaining solid triangle and paint
+// the material there at full brightness - the boundary is a single straight 45 degree line,
 // continuous with the neighboring tiles' own cuts.
 function _drawDiagonalTile(ctx, variants, col, row, cornerCut, px, py, tileSize) {
-  _drawTunnel(ctx, col, row, px, py, tileSize);
+  // The open half is the current (not-yet-dug) tile's own material darkened, not a lookup -
+  // cutting a corner doesn't change the tile's identity, only digOut does.
+  _darkenedMaterialDraw(ctx, variants, col, row, px, py, tileSize);
   if (!variants) return;
 
   const corners = _tileCorners(px, py, tileSize);

@@ -64,6 +64,7 @@ export class TileMap {
     this.grid = new Array(width * height);
     this.food = new Uint8Array(width * height); // holds FOOD_ID codes
     this.cornerCuts = new Uint8Array(width * height); // holds CORNER codes
+    this.tunnelOrigin = new Array(width * height).fill(null); // material a TUNNEL cell used to be
     this.surfaceFeatures = new Array(width).fill(null); // trees/bushes/flowers, keyed by column
     this._rng = mulberry32(seed ?? Date.now());
     this._generate();
@@ -122,9 +123,19 @@ export class TileMap {
   /** Dig out a tile, turning it into a walkable tunnel. Returns the tile that was removed. */
   digOut(x, y) {
     const removed = this.getTile(x, y);
+    if (this.inBounds(x, y) && removed !== TILE.TUNNEL) {
+      this.tunnelOrigin[this.idx(x, y)] = removed;
+    }
     this.setTile(x, y, TILE.TUNNEL);
     if (this.inBounds(x, y)) this.cornerCuts[this.idx(x, y)] = CORNER.NONE;
     return removed;
+  }
+
+  /** The material a TUNNEL cell used to be, so its rendered background can be a darker version
+   *  of that same material instead of a generic fill - falls back to plain dirt if untracked. */
+  getTunnelOrigin(x, y) {
+    if (!this.inBounds(x, y)) return TILE.DIRT_SOFT;
+    return this.tunnelOrigin[this.idx(x, y)] || TILE.DIRT_SOFT;
   }
 
   getCornerCut(x, y) {
@@ -262,6 +273,8 @@ export class TileMap {
 
   _forceTunnel(x, y) {
     if (!this.inBounds(x, y)) return;
+    const existing = this.getTile(x, y);
+    if (existing !== TILE.TUNNEL) this.tunnelOrigin[this.idx(x, y)] = existing;
     this.setTile(x, y, TILE.TUNNEL);
     this.setFoodId(x, y, FOOD_ID.NONE);
     this.cornerCuts[this.idx(x, y)] = CORNER.NONE;
