@@ -220,17 +220,17 @@ export class Game {
 
     drawSurfaceDecorations(ctx, this.map, startCol, endCol, originX, originY, TILE_SIZE);
 
-    // Creatures (culled to viewport, hidden while buried inside solid dirt).
+    // Creatures, culled to viewport.
     for (const c of this.creatures.list) {
       const x = originX + c.px * TILE_SIZE;
       const y = originY + c.py * TILE_SIZE;
       if (c.type === "WORM") {
         // Worms are a multi-cell trail, not one point - cull generously around the head
-        // (worms are at most 5 tiles long) and let drawWorm hide any individual segment
-        // that's actually buried in solid dirt.
+        // (worms are at most 5 tiles long); every segment is visible wherever it's allowed
+        // to be (overlaid on dirt or resting on an open floor - see _wormCanEnter).
         const margin = TILE_SIZE * 6;
         if (x < -margin || x > viewW + margin || y < -margin || y > viewH + margin) continue;
-        drawWorm(ctx, this.map, c, originX, originY, TILE_SIZE, now);
+        drawWorm(ctx, c, originX, originY, TILE_SIZE, now);
         continue;
       }
       if (x < -TILE_SIZE || x > viewW + TILE_SIZE || y < -TILE_SIZE || y > viewH + TILE_SIZE) continue;

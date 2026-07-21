@@ -41,7 +41,7 @@ export const FOOD_ID_TO_TYPE = {
 
 export const CREATURE_STATS = {
   WORM: { moveIntervalMs: 900, cap: 10 },
-  ANT: { moveIntervalMs: 420, chaseIntervalMs: 260, cap: 6, detectRange: 6 },
+  ANT: { moveIntervalMs: 840, chaseIntervalMs: 520, cap: 6, detectRange: 6 },
   TERMITE: { moveIntervalMs: 520, cap: 5 },
   BEETLE: { moveIntervalMs: 650, cap: 5 },
 };
