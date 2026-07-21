@@ -230,7 +230,7 @@ export class Game {
         // that's actually buried in solid dirt.
         const margin = TILE_SIZE * 6;
         if (x < -margin || x > viewW + margin || y < -margin || y > viewH + margin) continue;
-        drawWorm(ctx, this.map, c, originX, originY, TILE_SIZE, now);
+        drawWorm(ctx, c, originX, originY, TILE_SIZE, now);
         continue;
       }
       if (x < -TILE_SIZE || x > viewW + TILE_SIZE || y < -TILE_SIZE || y > viewH + TILE_SIZE) continue;

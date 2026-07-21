@@ -41,17 +41,23 @@ class Creature {
     this._toCol = col;
     this._toRow = row;
     this._waitTimer = randomBetween(0, CREATURE_STATS[type].moveIntervalMs);
-    // Worms are built from a head + tail + 0-3 repeated middle segments, so they come out
-    // in a few different lengths instead of always looking identical. Each one occupies its
-    // own real grid cell (a trail of past head positions, Snake-style) rather than just being
-    // drawn in a line from a single point, so the body can actually bend around corners.
-    // trail[0] is the head; trail is the target/settled shape, prevTrail is what it animates
-    // from over the current step (see drawWorm).
+
+    // Worms move in half-tile increments and only ever decide a new direction once the head
+    // is aligned back to a whole tile (see CreatureManager._tickWorm). trail holds one entry
+    // per body segment PLUS one hidden "ghost" slot past the tail, used only so the tail can
+    // tell which way it's arriving from - the same way every other segment does - without
+    // needing special-cased math. trail is the target/settled shape, prevTrail is what it
+    // animates from over the current tick (see drawWorm).
     if (type === "WORM") {
       this.wormMiddleSegments = Math.floor(Math.random() * 4);
       const totalSegments = 2 + this.wormMiddleSegments;
-      this.trail = Array.from({ length: totalSegments }, () => ({ col, row }));
-      this.prevTrail = Array.from({ length: totalSegments }, () => ({ col, row }));
+      this.headCol = col;
+      this.headRow = row;
+      this.wormDx = 1;
+      this.wormDy = 0;
+      this._wormTurning = false;
+      this.trail = Array.from({ length: totalSegments + 1 }, () => ({ col, row }));
+      this.prevTrail = Array.from({ length: totalSegments + 1 }, () => ({ col, row }));
     } else {
       this.wormMiddleSegments = 0;
     }
@@ -59,12 +65,18 @@ class Creature {
     // Ants cling to whatever surface they're walking on rather than always walking
     // horizontally on a floor. wallD{x,y} is the unit vector from the ant to the solid
     // neighbor it's standing on (0,1 = normal floor); travelD{x,y} is perpendicular to that,
-    // the direction it's currently walking along that surface.
+    // the direction it's currently walking along that surface. angleFrom/angleTo/rotElapsed/
+    // rotDuration drive a smooth rotation animation whenever wallD{x,y} changes, instead of
+    // popping straight to the new orientation (see _currentAntAngle).
     if (type === "ANT") {
       this.wallDx = 0;
       this.wallDy = 1;
       this.travelDx = this.facing;
       this.travelDy = 0;
+      this._angleFrom = 0;
+      this._angleTo = 0;
+      this._rotElapsed = 0;
+      this._rotDuration = 1;
     }
   }
 }
@@ -75,7 +87,7 @@ function randomBetween(a, b) {
 
 const ANT_SPAWN_EXCLUSION = 7; // tiles from the mole's start column ants won't spawn within
 const ANT_SURFACE_TURN_CHANCE = 0.1; // ~1-in-10 chance per tile to turn back while on open ground
-const ANT_CORNER_TURN_CHANCE = 0.25; // chance to turn back instead of following a tunnel corner
+const ANT_CORNER_TURN_CHANCE = 0.25; // chance to turn back instead of following a real corner
 const ANT_OFFSCREEN_MARGIN = 10; // tiles beyond the mole's column considered safely offscreen
 
 export class CreatureManager {
@@ -90,7 +102,7 @@ export class CreatureManager {
     for (let i = 0; i < CREATURE_STATS.WORM.cap; i++) {
       const col = Math.floor(Math.random() * map.width);
       const row = map.surfaceRow + 2 + Math.floor(Math.random() * 10);
-      if (map.getTile(col, row) !== TILE.ROCK) this._add("WORM", col, row);
+      if (this._wormCanEnter(col, row)) this._add("WORM", col, row);
     }
     // A few ants on the surface to start - TERMITE/BEETLE are disabled for now (see doc comment).
     for (let i = 0; i < CREATURE_STATS.ANT.cap; i++) {
@@ -146,6 +158,13 @@ export class CreatureManager {
   }
 
   _updateCreature(c, dt, mole, onMoleHurt) {
+    if (c.type === "ANT") c._rotElapsed += dt;
+
+    if (c.type === "WORM") {
+      this._tickWorm(c, dt);
+      return;
+    }
+
     if (c.isBusy) {
       c._elapsed += dt;
       const t = Math.min(1, c._elapsed / c._duration);
@@ -164,9 +183,7 @@ export class CreatureManager {
     c._waitTimer -= dt;
     if (c._waitTimer > 0) return;
 
-    if (c.type === "WORM") {
-      this._stepWorm(c);
-    } else if (c.type === "ANT") {
+    if (c.type === "ANT") {
       this._stepAnt(c, mole, onMoleHurt);
     } else {
       this._stepSurfaceBug(c, mole);
@@ -179,15 +196,6 @@ export class CreatureManager {
   // only checked/decremented while not busy), so consecutive tiles in the same direction glide
   // through the boundary at constant speed instead of gliding, stopping, then gliding again.
   _beginStep(c, toCol, toRow, interval) {
-    if (c.type === "WORM") {
-      // Shift the trail: the new head position leads, every other segment follows one step
-      // behind (each one moving into wherever the segment ahead of it used to be) - exactly
-      // how a Snake body advances. prevTrail is snapshotted here so drawWorm can interpolate
-      // every segment smoothly over the step, not just the head.
-      c.prevTrail = c.trail.map((p) => ({ ...p }));
-      c.trail.pop();
-      c.trail.unshift({ col: toCol, row: toRow });
-    }
     c.facing = toCol > c.col ? 1 : toCol < c.col ? -1 : c.facing;
     c._fromCol = c.col;
     c._fromRow = c.row;
@@ -199,19 +207,109 @@ export class CreatureManager {
     c._waitTimer = 0;
   }
 
-  _stepWorm(c) {
-    const stats = CREATURE_STATS.WORM;
-    const dirs = shuffled([[1, 0], [-1, 0], [0, 1], [0, -1]]);
-    for (const [dx, dy] of dirs) {
-      const nc = c.col + dx, nr = c.row + dy;
-      if (!this.map.inBounds(nc, nr)) continue;
+  // Worms may only occupy solid diggable dirt (drawn as an overlay burrowing through it) or an
+  // open cell resting directly on a solid floor (a dug-out tunnel floor, or the grass surface
+  // itself) - never open air with nothing underneath.
+  _wormCanEnter(col, row) {
+    const map = this.map;
+    if (!map.inBounds(col, row)) return false;
+    const tile = map.getTile(col, row);
+    if (tile === TILE.ROCK || tile === TILE.SKY) return false;
+    if (tile.solid) return true;
+    return map.hasFloorBelow(col, row);
+  }
+
+  _pickWormDirection(c) {
+    const options = shuffled([[1, 0], [-1, 0], [0, 1], [0, -1]]);
+    for (const [dx, dy] of options) {
+      const nc = c.headCol + dx, nr = c.headRow + dy;
       if (nc === this._moleColHint && nr === this._moleRowHint) continue;
-      const tile = this.map.getTile(nc, nr);
-      if (tile === TILE.ROCK || tile === TILE.SKY) continue;
-      this._beginStep(c, nc, nr, stats.moveIntervalMs);
+      if (this._wormCanEnter(nc, nr)) return [dx, dy];
+    }
+    return null;
+  }
+
+  // Worms glide at half-tile resolution: a new direction can only be chosen while the head
+  // sits exactly on a whole tile. Turning costs one extra tick - a pure in-place pivot with no
+  // forward progress (see _beginWormPivot) - before the half-tile glides resume, which is what
+  // lets the head/mid/tail bend sprites sweep through the corner one at a time (see
+  // _wormSegmentArt and the module doc comment on drawWorm).
+  _tickWorm(c, dt) {
+    const stats = CREATURE_STATS.WORM;
+
+    if (c.isBusy) {
+      c._elapsed += dt;
+      if (c._elapsed >= c._duration) {
+        c.isBusy = false;
+        c.headCol = c.trail[0].col;
+        c.headRow = c.trail[0].row;
+        c.px = c.headCol;
+        c.py = c.headRow;
+      } else {
+        const t = c._elapsed / c._duration;
+        c.px = lerp(c.prevTrail[0].col, c.trail[0].col, t);
+        c.py = lerp(c.prevTrail[0].row, c.trail[0].row, t);
+      }
       return;
     }
-    c._waitTimer = stats.moveIntervalMs * 0.5;
+
+    c._waitTimer -= dt;
+    if (c._waitTimer > 0) return;
+
+    const halfMs = stats.moveIntervalMs / 2;
+
+    if (c._wormTurning) {
+      c._wormTurning = false;
+      c.wormDx = c._pendingDx;
+      c.wormDy = c._pendingDy;
+      this._beginWormHalfStep(c, halfMs);
+      return;
+    }
+
+    const atWholeTile = Number.isInteger(c.headCol) && Number.isInteger(c.headRow);
+    if (atWholeTile) {
+      const dir = this._pickWormDirection(c);
+      if (!dir) {
+        c._waitTimer = stats.moveIntervalMs * 0.5;
+        return;
+      }
+      const [dx, dy] = dir;
+      if (dx !== c.wormDx || dy !== c.wormDy) {
+        c._pendingDx = dx;
+        c._pendingDy = dy;
+        c._wormTurning = true;
+        this._beginWormPivot(c, halfMs);
+        return;
+      }
+    }
+
+    this._beginWormHalfStep(c, halfMs);
+  }
+
+  _beginWormPivot(c, halfMs) {
+    c.prevTrail = c.trail.map((p) => ({ ...p }));
+    c._elapsed = 0;
+    c._duration = halfMs;
+    c.isBusy = true;
+    c._waitTimer = 0;
+  }
+
+  _beginWormHalfStep(c, halfMs) {
+    const newCol = c.headCol + c.wormDx * 0.5;
+    const newRow = c.headRow + c.wormDy * 0.5;
+    c.prevTrail = c.trail.map((p) => ({ ...p }));
+    c.trail.pop();
+    c.trail.unshift({ col: newCol, row: newRow });
+    c.headCol = newCol;
+    c.headRow = newRow;
+    if (Number.isInteger(newCol) && Number.isInteger(newRow)) {
+      c.col = newCol;
+      c.row = newRow;
+    }
+    c._elapsed = 0;
+    c._duration = halfMs;
+    c.isBusy = true;
+    c._waitTimer = 0;
   }
 
   _canWalkFloor(col, row) {
@@ -297,8 +395,8 @@ export class CreatureManager {
       }
       // Commit to the hole: curl down into it - the direction it was walking becomes the new
       // "down," and the wall it clings to is now behind it, on the side it approached from.
-      c.wallDx = -c.travelDx;
-      c.wallDy = 0;
+      const newWallDx = -c.travelDx, newWallDy = 0;
+      _setAntWall(c, newWallDx, newWallDy, false);
       c.travelDx = 0;
       c.travelDy = 1;
       this._beginStep(c, nc, c.row + 1, stats.moveIntervalMs);
@@ -309,9 +407,11 @@ export class CreatureManager {
   }
 
   // Generic wall-following, valid regardless of which surface (floor/wall/ceiling) the ant is
-  // currently clinging to: keep walking while the wall continues, and treat both "wall blocks
-  // the path ahead" (concave corner) and "wall drops away at an edge" (convex corner) as
-  // corner events with the same turn-around-or-follow odds.
+  // currently clinging to. A corner is either a real 90-degree bend - the wall keeps going
+  // straight afterward, and following it is a genuine decision the ant might turn back from -
+  // or one tile of a staircase, where the very next tile is already another corner. Staircases
+  // are walked through at a continuous 45-degree lean with no chance to turn back, exactly
+  // like a classic single-tile-tread/riser slope.
   _stepAntTunnel(c) {
     const map = this.map;
     const stats = CREATURE_STATS.ANT;
@@ -320,34 +420,42 @@ export class CreatureManager {
     const aheadX = c.col + c.travelDx, aheadY = c.row + c.travelDy;
 
     if (isSolid(aheadX, aheadY)) {
-      // Concave corner: the wall turns to block the path ahead.
-      if (Math.random() < ANT_CORNER_TURN_CHANCE) {
+      // Concave corner: the wall turns to block the path ahead. Reorienting and advancing
+      // into the inside corner happen together, in one glide, rather than pausing in place
+      // first - a staircase needs that to read as continuous, not stop-and-go.
+      const newWallDx = c.travelDx, newWallDy = c.travelDy;
+      const newTravelDx = -c.wallDx, newTravelDy = -c.wallDy;
+      const staircase = _isImmediateCorner(map, c.col, c.row, newWallDx, newWallDy, newTravelDx, newTravelDy);
+
+      if (!staircase && Math.random() < ANT_CORNER_TURN_CHANCE) {
         c.travelDx *= -1;
         c.travelDy *= -1;
-      } else {
-        const newWallDx = c.travelDx, newWallDy = c.travelDy;
-        c.travelDx = -c.wallDx;
-        c.travelDy = -c.wallDy;
-        c.wallDx = newWallDx;
-        c.wallDy = newWallDy;
+        c._waitTimer = stats.moveIntervalMs * 0.4;
+        return;
       }
-      c._waitTimer = stats.moveIntervalMs * 0.4;
+
+      _setAntWall(c, newWallDx, newWallDy, staircase);
+      c.travelDx = newTravelDx;
+      c.travelDy = newTravelDy;
+      this._beginStep(c, c.col + newTravelDx, c.row + newTravelDy, stats.moveIntervalMs);
       return;
     }
 
     const wallAheadX = aheadX + c.wallDx, wallAheadY = aheadY + c.wallDy;
     if (!isSolid(wallAheadX, wallAheadY)) {
       // Convex corner: the wall it was hugging drops away at an edge.
-      if (Math.random() < ANT_CORNER_TURN_CHANCE) {
+      const newWallDx = -c.travelDx, newWallDy = -c.travelDy;
+      const newTravelDx = c.wallDx, newTravelDy = c.wallDy;
+      const staircase = _isImmediateCorner(map, wallAheadX, wallAheadY, newWallDx, newWallDy, newTravelDx, newTravelDy);
+
+      if (!staircase && Math.random() < ANT_CORNER_TURN_CHANCE) {
         c.travelDx *= -1;
         c.travelDy *= -1;
         c._waitTimer = stats.moveIntervalMs * 0.4;
         return;
       }
-      const newWallDx = -c.travelDx, newWallDy = -c.travelDy;
-      const newTravelDx = c.wallDx, newTravelDy = c.wallDy;
-      c.wallDx = newWallDx;
-      c.wallDy = newWallDy;
+
+      _setAntWall(c, newWallDx, newWallDy, staircase);
       c.travelDx = newTravelDx;
       c.travelDy = newTravelDy;
       this._beginStep(c, wallAheadX, wallAheadY, stats.moveIntervalMs);
@@ -385,8 +493,7 @@ export class CreatureManager {
       if (type === "WORM") {
         const col = Math.floor(Math.random() * this.map.width);
         const row = this.map.surfaceRow + 2 + Math.floor(Math.random() * (this.map.height - this.map.surfaceRow - 3));
-        const tile = this.map.getTile(col, row);
-        if (tile !== TILE.ROCK && tile !== TILE.SKY) this._add(type, col, row);
+        if (this._wormCanEnter(col, row)) this._add(type, col, row);
       } else {
         // Ants spawn just off one side of the screen and walk in, rather than popping into
         // view - pick a column safely beyond the mole's (camera stays centered on it).
@@ -407,6 +514,18 @@ export class CreatureManager {
 
 }
 
+// True if, starting at (col,row) with the given wall/travel orientation, taking one more step
+// forward would immediately hit another corner (concave or convex). That single-tile-only
+// validity is the signature of one tread/riser of a staircase, as opposed to a real corner
+// with a straight run on the other side of it.
+function _isImmediateCorner(map, col, row, wallDx, wallDy, travelDx, travelDy) {
+  const isSolid = (x, y) => map.getTile(x, y).solid;
+  const aheadX = col + travelDx, aheadY = row + travelDy;
+  if (isSolid(aheadX, aheadY)) return true;
+  const wallAheadX = aheadX + wallDx, wallAheadY = aheadY + wallDy;
+  return !isSolid(wallAheadX, wallAheadY);
+}
+
 function shuffled(arr) {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -418,6 +537,14 @@ function shuffled(arr) {
 
 function lerp(a, b, t) {
   return a + (b - a) * t;
+}
+
+// Shortest-path angle interpolation (handles the +-pi wraparound) so a rotation animation
+// always turns the short way around instead of occasionally spinning the long way.
+function lerpAngle(a, b, t) {
+  const twoPi = Math.PI * 2;
+  const diff = (((b - a + Math.PI) % twoPi) + twoPi) % twoPi - Math.PI;
+  return a + diff * t;
 }
 
 // ---------------------------------------------------------------------------
@@ -433,14 +560,42 @@ function lerp(a, b, t) {
 // offset is needed for them.
 const FOOT_OFFSET = { TERMITE: 4, BEETLE: 5 };
 
-// Rotation that puts local "down" (feet) onto the wall the ant is clinging to, keyed by
-// wallDx,wallDy. Derived from rotate(0,1,angle) = wallSide for each of the 4 cardinal cases.
-const ANT_WALL_ANGLE = {
-  "0,1": 0, // normal floor
-  "1,0": -Math.PI / 2, // right-hand wall
-  "0,-1": Math.PI, // ceiling
-  "-1,0": Math.PI / 2, // left-hand wall
-};
+// Rotation that puts local "down" (feet) onto the wall the ant is clinging to. Derived from
+// rotate(0,1,angle) = wallSide: canvas rotate(theta) sends local (0,1) to (-sin(theta),
+// cos(theta)), so matching that to (wallDx,wallDy) gives theta = atan2(-wallDx, wallDy).
+function _wallAngle(wallDx, wallDy) {
+  return Math.atan2(-wallDx, wallDy);
+}
+
+// The diagonal angle bisecting two adjacent cardinal wall directions - used while an ant is
+// mid-staircase, so its feet lean into the slope instead of popping between the two cardinal
+// orientations every single tile.
+function _wallBisectAngle(wallDxA, wallDyA, wallDxB, wallDyB) {
+  return Math.atan2(-(wallDxA + wallDxB), wallDyA + wallDyB);
+}
+
+// The ant's currently rendered rotation, animating smoothly from the angle it had before its
+// last orientation change to the target angle set by that change (see _setAntWall).
+function _currentAntAngle(c) {
+  const t = c._rotDuration > 0 ? Math.min(1, c._rotElapsed / c._rotDuration) : 1;
+  return lerpAngle(c._angleFrom, c._angleTo, t);
+}
+
+// Changes which wall an ant clings to, kicking off a smooth rotation from its current visual
+// angle to the new one - a cardinal angle for a real corner, or the diagonal bisector for one
+// tile of a staircase (see _stepAntTunnel).
+function _setAntWall(c, newWallDx, newWallDy, staircase) {
+  const fromAngle = _currentAntAngle(c);
+  const toAngle = staircase
+    ? _wallBisectAngle(c.wallDx, c.wallDy, newWallDx, newWallDy)
+    : _wallAngle(newWallDx, newWallDy);
+  c.wallDx = newWallDx;
+  c.wallDy = newWallDy;
+  c._angleFrom = fromAngle;
+  c._angleTo = toAngle;
+  c._rotElapsed = 0;
+  c._rotDuration = CREATURE_STATS.ANT.moveIntervalMs;
+}
 
 export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   const t = nowMs / 1000;
@@ -452,7 +607,7 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   ctx.translate(cx, cy);
 
   if (c.type === "ANT") {
-    ctx.rotate(ANT_WALL_ANGLE[`${c.wallDx},${c.wallDy}`] ?? 0);
+    ctx.rotate(_currentAntAngle(c));
     // Flip so the ant visually walks the direction it's actually traveling, whichever surface
     // it's currently on - "local right" (unflipped) is the wall direction rotated 90deg CCW.
     const localRightDx = c.wallDy, localRightDy = -c.wallDx;
@@ -482,14 +637,6 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
 // 1 (or higher) for a dramatically bigger creature.
 const WORM_DISPLAY_SCALE = 0.5;
 
-// Cardinal direction name, used to key the bend-orientation lookup below.
-function _dirName(dx, dy) {
-  if (dx === 1) return "E";
-  if (dx === -1) return "W";
-  if (dy === 1) return "S";
-  return "N";
-}
-
 // The unrotated straight sprites (head/mid/tail) all face West (tapered/leading end pointing
 // left) - see js/assets.js's extraction notes. Rotates that West-facing art to point `dx,dy`
 // instead: canvas rotate(θ) sends local West (-1,0) to (-cosθ,-sinθ), so θ = atan2(-dy,-dx).
@@ -497,9 +644,9 @@ function _straightAngle(dx, dy) {
   return Math.atan2(-dy, -dx);
 }
 
-// The unrotated middle_bend sprite connects East and South (a quarter-pipe elbow). Rotating it
-// 90deg at a time cycles it through the other 3 corner orientations - this table was derived
-// by hand from that canonical shape and verified by rendering all 4 cases.
+// The unrotated *_bend sprites connect East and South (a quarter-pipe elbow). Rotating 90deg
+// at a time cycles through the other 3 corner orientations - this table was derived by hand
+// from that canonical shape and verified by rendering all 4 cases.
 const BEND_ANGLE_BY_PAIR = {
   "E,S": 0,
   "S,W": Math.PI / 2,
@@ -507,66 +654,85 @@ const BEND_ANGLE_BY_PAIR = {
   "E,N": (3 * Math.PI) / 2,
 };
 
+function _dirName(dx, dy) {
+  if (dx === 1) return "E";
+  if (dx === -1) return "W";
+  if (dy === 1) return "S";
+  return "N";
+}
+
 function _bendAngle(dxA, dyA, dxB, dyB) {
   const key = [_dirName(dxA, dyA), _dirName(dxB, dyB)].sort().join(",");
   return BEND_ANGLE_BY_PAIR[key] ?? 0;
 }
 
-// A path endpoint (the very front or back of the body) only ever has ONE neighboring link, so
-// geometrically it can never be a corner - only interior (middle) segments, which sit between
-// two links, can bend. Head and tail are always the plain straight sprites; only middles check
-// whether their surrounding two links agree (straight) or turn 90 degrees (bend), and if so,
-// which of the 4 corner orientations to rotate the bend sprite to.
-function _wormSegmentArt(trail, i) {
+// True only for a genuine 90-degree turn between two cardinal directions - false for both
+// "same direction" and "180-degree reversal", neither of which any *_bend sprite can represent.
+function _isRightAngle(dxA, dyA, dxB, dyB) {
+  return dxA * dxB + dyA * dyB === 0;
+}
+
+// Every segment (head, middles, tail alike) compares the direction arriving into it from the
+// tail-ward side against the direction leaving it toward the head-ward side: equal (or a full
+// reversal) renders straight, a genuine right angle renders that segment's *_bend art. The
+// head has no tail-ward neighbor while it isn't turning, so it just faces the worm's current
+// travel direction; while c._wormTurning is set (the one-tick in-place pivot - see
+// CreatureManager._tickWorm) it instead bridges the old travel direction to the new one, which
+// is the only time headBend is ever used. The real tail (index n-1) is the only OTHER segment
+// whose *_bend sprite can appear, once it sweeps through the same corner tile the head and any
+// middles already turned at - trail[n] (one past the last real segment) is a hidden ghost slot
+// carried purely so the tail has a "trail-ward neighbor" to compare against, same as everyone else.
+function _wormSegmentArt(c, i) {
   const { head, mid, tail, headBend, midBend, tailBend } = wormSegmentSprites;
-  const n = trail.length;
+  const trail = c.trail;
+  const n = trail.length - 1;
 
   if (i === 0) {
-    const dx = Math.sign(trail[0].col - trail[1].col);
-    const dy = Math.sign(trail[0].row - trail[1].row);
-    return { img: head, angle: _straightAngle(dx, dy) };
-  }
-  if (i === n - 1) {
-    const dx = Math.sign(trail[i - 1].col - trail[i].col);
-    const dy = Math.sign(trail[i - 1].row - trail[i].row);
-    return { img: tail, angle: _straightAngle(dx, dy) };
+    if (c._wormTurning) {
+      if (_isRightAngle(c.wormDx, c.wormDy, c._pendingDx, c._pendingDy)) {
+        return { img: headBend, angle: _bendAngle(c.wormDx, c.wormDy, c._pendingDx, c._pendingDy) };
+      }
+      return { img: head, angle: _straightAngle(c._pendingDx, c._pendingDy) };
+    }
+    return { img: head, angle: _straightAngle(c.wormDx, c.wormDy) };
   }
 
-  // dirIn: direction traveling from the tail-ward neighbor into this segment.
-  // dirOut: direction traveling from this segment toward the head-ward neighbor.
   const dirInDx = Math.sign(trail[i].col - trail[i + 1].col);
   const dirInDy = Math.sign(trail[i].row - trail[i + 1].row);
   const dirOutDx = Math.sign(trail[i - 1].col - trail[i].col);
   const dirOutDy = Math.sign(trail[i - 1].row - trail[i].row);
+  const isBend = _isRightAngle(dirInDx, dirInDy, dirOutDx, dirOutDy);
 
-  if (dirInDx === dirOutDx && dirInDy === dirOutDy) {
-    return { img: mid, angle: _straightAngle(dirOutDx, dirOutDy) };
+  if (i === n - 1) {
+    return isBend
+      ? { img: tailBend, angle: _bendAngle(dirInDx, dirInDy, dirOutDx, dirOutDy) }
+      : { img: tail, angle: _straightAngle(dirOutDx, dirOutDy) };
   }
-  return { img: midBend, angle: _bendAngle(dirInDx, dirInDy, dirOutDx, dirOutDy) };
+  return isBend
+    ? { img: midBend, angle: _bendAngle(dirInDx, dirInDy, dirOutDx, dirOutDy) }
+    : { img: mid, angle: _straightAngle(dirOutDx, dirOutDy) };
 }
 
 /**
- * Worms occupy a real trail of grid cells (Snake-style) instead of just being drawn in a line
- * from one point, so they need the camera origin rather than a single screen position -
- * called directly by game.js instead of going through drawCreature. Each segment interpolates
- * smoothly from its previous trail slot to its current one over the same step timing as the
- * head's own movement (they all move in lockstep, one slot behind).
+ * Worms occupy a real trail of grid cells (Snake-style), so they need the camera origin
+ * rather than a single screen position - called directly by game.js instead of going through
+ * drawCreature. Segments are visible everywhere they're allowed to travel: overlaid on top of
+ * solid dirt while burrowing, or resting on an open tunnel floor/the grass surface (see
+ * CreatureManager._wormCanEnter) - never floating in open air.
  */
-export function drawWorm(ctx, map, c, originX, originY, tileSize, nowMs) {
+export function drawWorm(ctx, c, originX, originY, tileSize, nowMs) {
   if (!wormSegmentSprites || !c.trail) return;
   const segSize = tileSize * WORM_DISPLAY_SCALE;
+  const segCount = c.trail.length - 1; // last slot is the hidden ghost, never drawn
   const t = c.isBusy ? Math.min(1, c._elapsed / c._duration) : 1;
 
-  for (let i = 0; i < c.trail.length; i++) {
+  for (let i = 0; i < segCount; i++) {
     const cur = c.trail[i];
     const prev = c.prevTrail[i];
     const col = lerp(prev.col, cur.col, t);
     const row = lerp(prev.row, cur.row, t);
 
-    const cellCol = Math.round(col), cellRow = Math.round(row);
-    if (map.getTile(cellCol, cellRow).solid) continue; // buried in dirt - not drawn
-
-    const { img, angle } = _wormSegmentArt(c.trail, i);
+    const { img, angle } = _wormSegmentArt(c, i);
     const screenX = originX + col * tileSize + tileSize / 2;
     const screenY = originY + row * tileSize + tileSize / 2;
 
@@ -578,15 +744,17 @@ export function drawWorm(ctx, map, c, originX, originY, tileSize, nowMs) {
   }
 }
 
-const ANT_WALK_FPS = 10; // walk-cycle playback speed while moving
+const ANT_DISPLAY_SCALE = 0.5;
+const ANT_WALK_FPS = 5; // walk-cycle playback speed while moving
 
-// The 6 walk-cycle frames already fill their own 64x64 cell with feet at the bottom edge, so
-// drawing the frame centered on the (already rotated) wall-relative origin lands it correctly
-// with no extra anchoring math.
+// The 6 walk-cycle frames fill their own 64x64 cell with feet at the bottom edge; anchor that
+// bottom edge to tileSize/2 (the wall-facing edge, pre-rotation) so scaling down still keeps
+// the ant's feet planted on the surface it's clinging to instead of floating mid-cell.
 function drawAnt(ctx, tileSize, t, moving) {
   if (!antWalkSprites) return;
   const frame = moving ? Math.floor(t * ANT_WALK_FPS) % antWalkSprites.length : 0;
-  ctx.drawImage(antWalkSprites[frame], -tileSize / 2, -tileSize / 2, tileSize, tileSize);
+  const size = tileSize * ANT_DISPLAY_SCALE;
+  ctx.drawImage(antWalkSprites[frame], -size / 2, tileSize / 2 - size, size, size);
 }
 
 function drawTermite(ctx, s, t, moving) {
