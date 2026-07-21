@@ -218,14 +218,25 @@ export class CreatureManager {
     return map.hasFloorBelow(col, row);
   }
 
+  // A worm keeps crawling in whatever direction it's already headed, the same way a real worm
+  // (or classic Snake) doesn't wander at random - it only changes direction when the way
+  // forward is blocked. It can never reverse straight back the way it came: the segment right
+  // behind its head already occupies that cell, so doubling back would overlap its own body.
+  // Blocked-and-can't-turn-either just means it's stuck for now and waits.
   _pickWormDirection(c) {
-    const options = shuffled([[1, 0], [-1, 0], [0, 1], [0, -1]]);
-    for (const [dx, dy] of options) {
-      const nc = c.headCol + dx, nr = c.headRow + dy;
-      if (nc === this._moleColHint && nr === this._moleRowHint) continue;
-      if (this._wormCanEnter(nc, nr)) return [dx, dy];
+    if (this._wormDirValid(c, c.wormDx, c.wormDy)) return [c.wormDx, c.wormDy];
+
+    const turns = shuffled([[-c.wormDy, c.wormDx], [c.wormDy, -c.wormDx]]);
+    for (const [dx, dy] of turns) {
+      if (this._wormDirValid(c, dx, dy)) return [dx, dy];
     }
     return null;
+  }
+
+  _wormDirValid(c, dx, dy) {
+    const nc = c.headCol + dx, nr = c.headRow + dy;
+    if (nc === this._moleColHint && nr === this._moleRowHint) return false;
+    return this._wormCanEnter(nc, nr);
   }
 
   // Worms move by snapping directly from one half-tile position to the next - no smooth
