@@ -69,14 +69,17 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
     // Grass with nothing solid left underneath (the dirt below has been dug away) - there's
     // no turf to stand on anymore. A hole exactly one tile wide (both neighbors still have
     // their own support) gets one of the two dedicated mound-with-opening sprites; anything
-    // wider just reads as a plain open tunnel mouth.
+    // wider just shows plain sky - painted explicitly rather than left undrawn, since the
+    // decorative background hills (drawn behind everything) would otherwise still show
+    // through a gap this close to the ground line.
     const leftOpen = _isUnsupportedSurface(map, col - 1, row);
     const rightOpen = _isUnsupportedSurface(map, col + 1, row);
     if (!leftOpen && !rightOpen) {
       _drawBurrowMound(ctx, col, px, py, tileSize);
-      return;
+    } else {
+      ctx.fillStyle = "#8fd6ee";
+      ctx.fillRect(px, py, tileSize, tileSize);
     }
-    _drawTunnel(ctx, map, col, row, px, py, tileSize);
     return;
   }
 
