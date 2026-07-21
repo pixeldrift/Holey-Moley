@@ -11,6 +11,7 @@ let sprites = null;
 let materials = null; // { grass: [img,img,img,img], sand: [...], ... }
 let flowerSprites = null;
 let bushSprites = null;
+let burrowMoundSprites = null;
 
 const MATERIAL_FOR_TILE = {
   SURFACE: "grass",
@@ -39,6 +40,7 @@ export function initTextures(loadedSprites) {
     { top: sprites.bush01, root: sprites.bush01Root },
     { top: sprites.bush02, root: sprites.bush02Root },
   ];
+  burrowMoundSprites = sprites.burrowMounds;
 }
 
 function hashTile(col, row) {
@@ -65,7 +67,15 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
 
   if (tile === TILE.SURFACE && !map.getTile(col, row + 1).solid) {
     // Grass with nothing solid left underneath (the dirt below has been dug away) - there's
-    // no turf to stand on anymore, so render it as an open tunnel mouth instead.
+    // no turf to stand on anymore. A hole exactly one tile wide (both neighbors still have
+    // their own support) gets one of the two dedicated mound-with-opening sprites; anything
+    // wider just reads as a plain open tunnel mouth.
+    const leftOpen = _isUnsupportedSurface(map, col - 1, row);
+    const rightOpen = _isUnsupportedSurface(map, col + 1, row);
+    if (!leftOpen && !rightOpen) {
+      _drawBurrowMound(ctx, col, px, py, tileSize);
+      return;
+    }
     _drawTunnel(ctx, map, col, row, px, py, tileSize);
     return;
   }
@@ -111,6 +121,18 @@ function _drawTunnel(ctx, map, col, row, px, py, tileSize) {
   const material = MATERIAL_FOR_TILE[origin.id];
   const variants = material ? materials[material] : null;
   _darkenedMaterialDraw(ctx, variants, col, row, px, py, tileSize);
+}
+
+// True for a SURFACE column that's lost its support (used to tell a one-tile-wide hole from a
+// wider one by checking whether either neighbor is in the same state).
+function _isUnsupportedSurface(map, col, row) {
+  return map.getTile(col, row) === TILE.SURFACE && !map.getTile(col, row + 1).solid;
+}
+
+function _drawBurrowMound(ctx, col, px, py, tileSize) {
+  const rng = mulberry32(col * 9187 + 31);
+  const img = burrowMoundSprites[Math.floor(rng() * burrowMoundSprites.length)];
+  ctx.drawImage(img, px, py, tileSize, tileSize);
 }
 
 // The four points of a tile, in canvas order, used to build the triangular clip paths below.

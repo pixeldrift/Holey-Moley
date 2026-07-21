@@ -216,6 +216,13 @@ export class TileMap {
 
     this._generateSurfaceFeatures(rng);
     this._carveStartingBurrow();
+
+    // The very bottom row is always solid rock - a hard natural floor so there's nowhere
+    // left to dig once you've gone deep enough, regardless of whatever depth-based material
+    // or cluster scattering put there.
+    for (let x = 0; x < this.width; x++) {
+      this.setTile(x, this.height - 1, TILE.ROCK);
+    }
   }
 
   _generateSurfaceFeatures(rng) {

@@ -46,6 +46,9 @@ const SOURCES = {
   turnipTop: "assets/turnip_top.png",
   turnipBottom: "assets/turnip_bottom.png",
   cabbage: "assets/cabbage.png",
+  // A grassy mound with a dark opening - used only for a surface hole exactly one tile wide
+  // (see textures.js), picked randomly per column between the two variants.
+  burrowMounds: ["assets/burrow_01.png", "assets/burrow_02.png"],
   wormHead: "assets/worm_head.png",
   wormMid: "assets/worm_mid.png",
   wormTail: "assets/worm_tail.png",
