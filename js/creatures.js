@@ -644,26 +644,69 @@ function _straightAngle(dx, dy) {
   return Math.atan2(-dy, -dx);
 }
 
-// The unrotated *_bend sprites connect East and South (a quarter-pipe elbow). Rotating 90deg
-// at a time cycles through the other 3 corner orientations - this table was derived by hand
-// from that canonical shape and verified by rendering all 4 cases.
-const BEND_ANGLE_BY_PAIR = {
-  "E,S": 0,
-  "S,W": Math.PI / 2,
-  "N,W": Math.PI,
-  "E,N": (3 * Math.PI) / 2,
-};
+// The unrotated *_bend sprites are each a quarter-pipe elbow, but they are NOT all drawn with
+// the same canonical orientation in the sheet - verified by inspecting each crop's actual
+// pixels (which edges the art truly touches, and which way its open/tapered end curves):
+//   mid_bend:  a symmetric elbow connecting East (flat, right edge) and South (flat, bottom
+//              edge) - both ends are real connections, interchangeable.
+//   head_bend: one flat/real edge at East (right edge); the other end is the tapered,
+//              non-connecting head TIP, which curves toward North (never actually touches an
+//              edge, since it's rounded, but that's the direction it opens toward).
+//   tail_bend: one flat/real edge at West (left edge); the tapered tail TIP curves toward
+//              North, same as head_bend's tip direction, but its flat side is mirrored.
+// head_bend/tail_bend therefore each need a specific (flat -> real neighbor, tip -> open end)
+// mapping, not just "which 2 directions are involved" - see _findBendTransform.
+const MID_BEND_CANON = { a: [1, 0], b: [0, 1] }; // East, South (order interchangeable)
+const HEAD_BEND_CANON = { flat: [1, 0], tip: [0, -1] }; // East, North
+const TAIL_BEND_CANON = { flat: [-1, 0], tip: [0, -1] }; // West, North
 
-function _dirName(dx, dy) {
-  if (dx === 1) return "E";
-  if (dx === -1) return "W";
-  if (dy === 1) return "S";
-  return "N";
+function _vecEq(a, b) {
+  return Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6;
 }
 
-function _bendAngle(dxA, dyA, dxB, dyB) {
-  const key = [_dirName(dxA, dyA), _dirName(dxB, dyB)].sort().join(",");
-  return BEND_ANGLE_BY_PAIR[key] ?? 0;
+// Applies an optional horizontal mirror (in the sprite's own local space) followed by a
+// rotation - matching the draw order `ctx.rotate(angle); ctx.scale(flip?-1:1,1);`, where the
+// scale (nearest to drawImage) takes effect before the rotate.
+function _applyFlipRotate([x, y], flip, angle) {
+  const fx = flip ? -x : x;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  return [fx * cos - y * sin, fx * sin + y * cos];
+}
+
+// Finds the (flip, angle) pair - one of the 8 combinations of an optional horizontal mirror
+// and a 90-degree-step rotation - that lands a bend sprite's canonical connecting direction(s)
+// on the actual directions needed this frame, so its flat edge always butts exactly against
+// the flat edge of whichever real neighbor segment sits next to it. A pure rotation can only
+// reach 4 of the 8 possible orientations of an asymmetric (flat+tip) shape; the other 4 need a
+// mirror first, which is exactly the "flipped or rotated" case a 90-degree turn can produce
+// depending on which way the worm turns.
+function _findBendTransform(canon, reqFlat, reqTip) {
+  for (const flip of [false, true]) {
+    for (let k = 0; k < 4; k++) {
+      const angle = k * (Math.PI / 2);
+      if (_vecEq(_applyFlipRotate(canon.flat, flip, angle), reqFlat) &&
+          _vecEq(_applyFlipRotate(canon.tip, flip, angle), reqTip)) {
+        return { flip, angle };
+      }
+    }
+  }
+  return { flip: false, angle: 0 }; // unreachable for a valid perpendicular pair
+}
+
+// mid_bend's two ends are both real, interchangeable connections (see MID_BEND_CANON) - a pure
+// rotation always suffices (no mirror needed) since a symmetric elbow looks the same read
+// either direction, so this only searches the 4 rotations against both port assignments.
+function _findMidBendTransform(dirA, dirB) {
+  for (const [reqA, reqB] of [[dirA, dirB], [dirB, dirA]]) {
+    for (let k = 0; k < 4; k++) {
+      const angle = k * (Math.PI / 2);
+      if (_vecEq(_applyFlipRotate(MID_BEND_CANON.a, false, angle), reqA) &&
+          _vecEq(_applyFlipRotate(MID_BEND_CANON.b, false, angle), reqB)) {
+        return { flip: false, angle };
+      }
+    }
+  }
+  return { flip: false, angle: 0 };
 }
 
 // True only for a genuine 90-degree turn between two cardinal directions - false for both
@@ -677,11 +720,14 @@ function _isRightAngle(dxA, dyA, dxB, dyB) {
 // reversal) renders straight, a genuine right angle renders that segment's *_bend art. The
 // head has no tail-ward neighbor while it isn't turning, so it just faces the worm's current
 // travel direction; while c._wormTurning is set (the one-tick in-place pivot - see
-// CreatureManager._tickWorm) it instead bridges the old travel direction to the new one, which
-// is the only time headBend is ever used. The real tail (index n-1) is the only OTHER segment
-// whose *_bend sprite can appear, once it sweeps through the same corner tile the head and any
-// middles already turned at - trail[n] (one past the last real segment) is a hidden ghost slot
-// carried purely so the tail has a "trail-ward neighbor" to compare against, same as everyone else.
+// CreatureManager._tickWorm) it instead bridges the old travel direction (its flat edge, toward
+// the body) to the new pending one (its tapered tip), which is the only time headBend is ever
+// used. The real tail (index n-1) is the only OTHER segment whose *_bend sprite can appear,
+// once it sweeps through the same corner tile the head and any middles already turned at -
+// trail[n] (one past the last real segment) is a hidden ghost slot carried purely so the tail
+// has a "trail-ward neighbor" to compare against, same as everyone else; that ghost direction
+// (dirIn) is where the tail's tapered tip points, and dirOut (the real neighbor ahead) is where
+// its flat edge connects.
 function _wormSegmentArt(c, i) {
   const { head, mid, tail, headBend, midBend, tailBend } = wormSegmentSprites;
   const trail = c.trail;
@@ -690,11 +736,12 @@ function _wormSegmentArt(c, i) {
   if (i === 0) {
     if (c._wormTurning) {
       if (_isRightAngle(c.wormDx, c.wormDy, c._pendingDx, c._pendingDy)) {
-        return { img: headBend, angle: _bendAngle(c.wormDx, c.wormDy, c._pendingDx, c._pendingDy) };
+        const { flip, angle } = _findBendTransform(HEAD_BEND_CANON, [-c.wormDx, -c.wormDy], [c._pendingDx, c._pendingDy]);
+        return { img: headBend, angle, flip };
       }
-      return { img: head, angle: _straightAngle(c._pendingDx, c._pendingDy) };
+      return { img: head, angle: _straightAngle(c._pendingDx, c._pendingDy), flip: false };
     }
-    return { img: head, angle: _straightAngle(c.wormDx, c.wormDy) };
+    return { img: head, angle: _straightAngle(c.wormDx, c.wormDy), flip: false };
   }
 
   const dirInDx = Math.sign(trail[i].col - trail[i + 1].col);
@@ -704,13 +751,13 @@ function _wormSegmentArt(c, i) {
   const isBend = _isRightAngle(dirInDx, dirInDy, dirOutDx, dirOutDy);
 
   if (i === n - 1) {
-    return isBend
-      ? { img: tailBend, angle: _bendAngle(dirInDx, dirInDy, dirOutDx, dirOutDy) }
-      : { img: tail, angle: _straightAngle(dirOutDx, dirOutDy) };
+    if (!isBend) return { img: tail, angle: _straightAngle(dirOutDx, dirOutDy), flip: false };
+    const { flip, angle } = _findBendTransform(TAIL_BEND_CANON, [dirOutDx, dirOutDy], [dirInDx, dirInDy]);
+    return { img: tailBend, angle, flip };
   }
-  return isBend
-    ? { img: midBend, angle: _bendAngle(dirInDx, dirInDy, dirOutDx, dirOutDy) }
-    : { img: mid, angle: _straightAngle(dirOutDx, dirOutDy) };
+  if (!isBend) return { img: mid, angle: _straightAngle(dirOutDx, dirOutDy), flip: false };
+  const { flip, angle } = _findMidBendTransform([dirInDx, dirInDy], [dirOutDx, dirOutDy]);
+  return { img: midBend, angle, flip };
 }
 
 /**
@@ -732,13 +779,14 @@ export function drawWorm(ctx, c, originX, originY, tileSize, nowMs) {
     const col = lerp(prev.col, cur.col, t);
     const row = lerp(prev.row, cur.row, t);
 
-    const { img, angle } = _wormSegmentArt(c, i);
+    const { img, angle, flip } = _wormSegmentArt(c, i);
     const screenX = originX + col * tileSize + tileSize / 2;
     const screenY = originY + row * tileSize + tileSize / 2;
 
     ctx.save();
     ctx.translate(screenX, screenY);
     ctx.rotate(angle);
+    ctx.scale(flip ? -1 : 1, 1);
     ctx.drawImage(img, -segSize / 2, -segSize / 2, segSize, segSize);
     ctx.restore();
   }
