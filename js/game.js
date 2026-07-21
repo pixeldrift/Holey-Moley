@@ -230,7 +230,7 @@ export class Game {
         // to be (overlaid on dirt or resting on an open floor - see _wormCanEnter).
         const margin = TILE_SIZE * 6;
         if (x < -margin || x > viewW + margin || y < -margin || y > viewH + margin) continue;
-        drawWorm(ctx, c, originX, originY, TILE_SIZE, now);
+        drawWorm(ctx, c, originX, originY, TILE_SIZE);
         continue;
       }
       if (x < -TILE_SIZE || x > viewW + TILE_SIZE || y < -TILE_SIZE || y > viewH + TILE_SIZE) continue;
