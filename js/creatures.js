@@ -725,9 +725,9 @@ function _isRightAngle(dxA, dyA, dxB, dyB) {
 // used. The real tail (index n-1) is the only OTHER segment whose *_bend sprite can appear,
 // once it sweeps through the same corner tile the head and any middles already turned at -
 // trail[n] (one past the last real segment) is a hidden ghost slot carried purely so the tail
-// has a "trail-ward neighbor" to compare against, same as everyone else; that ghost direction
-// (dirIn) is where the tail's tapered tip points, and dirOut (the real neighbor ahead) is where
-// its flat edge connects.
+// has a "trail-ward neighbor" to compare against, same as everyone else; the physical direction
+// toward that ghost (-dirIn) is where the tail's tapered tip points, and dirOut (the physical
+// direction to the real neighbor ahead) is where its flat edge connects.
 function _wormSegmentArt(c, i) {
   const { head, mid, tail, headBend, midBend, tailBend } = wormSegmentSprites;
   const trail = c.trail;
@@ -744,6 +744,11 @@ function _wormSegmentArt(c, i) {
     return { img: head, angle: _straightAngle(c.wormDx, c.wormDy), flip: false };
   }
 
+  // dirIn is the direction of TRAVEL arriving at this segment (trail[i] minus the tail-ward
+  // neighbor trail[i+1]) - the physical direction FROM here TOWARD that neighbor is the
+  // opposite, -dirIn. dirOut (trail[i-1] minus trail[i]) is already the physical direction
+  // toward the head-ward neighbor, no flip needed. Every *_bend orientation below is built
+  // from real/physical neighbor directions, so dirIn is negated at every use.
   const dirInDx = Math.sign(trail[i].col - trail[i + 1].col);
   const dirInDy = Math.sign(trail[i].row - trail[i + 1].row);
   const dirOutDx = Math.sign(trail[i - 1].col - trail[i].col);
@@ -752,11 +757,11 @@ function _wormSegmentArt(c, i) {
 
   if (i === n - 1) {
     if (!isBend) return { img: tail, angle: _straightAngle(dirOutDx, dirOutDy), flip: false };
-    const { flip, angle } = _findBendTransform(TAIL_BEND_CANON, [dirOutDx, dirOutDy], [dirInDx, dirInDy]);
+    const { flip, angle } = _findBendTransform(TAIL_BEND_CANON, [dirOutDx, dirOutDy], [-dirInDx, -dirInDy]);
     return { img: tailBend, angle, flip };
   }
   if (!isBend) return { img: mid, angle: _straightAngle(dirOutDx, dirOutDy), flip: false };
-  const { flip, angle } = _findMidBendTransform([dirInDx, dirInDy], [dirOutDx, dirOutDy]);
+  const { flip, angle } = _findMidBendTransform([-dirInDx, -dirInDy], [dirOutDx, dirOutDy]);
   return { img: midBend, angle, flip };
 }
 
