@@ -210,6 +210,13 @@ html, body {
   text-align: left;
 }
 
+.version-tag {
+  display: block;
+  margin-top: 14px;
+  font-size: 11px;
+  color: #a89a80;
+}
+
 .big-btn {
   width: 100%;
   margin-top: 14px;
