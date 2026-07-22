@@ -109,7 +109,14 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
     ctx.fillRect(px, py, tileSize, tileSize);
   }
 
-  if (tile === TILE.ROOT) {
+  // Roots stay exclusive to plain terrain - never drawn on either tile the skeleton's 2-cell-
+  // tall sprite occupies (its own anchor tile and the one directly below), so that art shows
+  // only the background material and the skeleton itself, not both competing for the same
+  // square (see tiles.js _placeSkeleton, which also keeps the skeleton's candidate tiles clear
+  // of the giant root's footprint for the same reason).
+  const sk = map.skeletonTile;
+  const isSkeletonTile = sk?.col === col && (sk?.row === row || sk?.row + 1 === row);
+  if (tile === TILE.ROOT && !isSkeletonTile) {
     const overlay = pickVariant(sprites.rootOverlays, col, row, 7);
     ctx.drawImage(overlay, px, py, tileSize, tileSize);
   }
@@ -244,6 +251,13 @@ export function drawSurfaceDecorations(ctx, map, startCol, endCol, originX, orig
   }
 }
 
+// root_giant's own art doesn't taper to a point at the exact horizontal center of its 6-tile
+// canvas - measured directly from the extracted sprite (topmost opaque row's x-midpoint is at
+// pixel 155.5 of 384), as the fraction of the sprite's own width from its left edge to where
+// it connects to the trunk. Centering the whole bounding box instead (as if it were symmetric)
+// would visibly offset the root from the trunk it's supposed to grow out of.
+const ROOT_GIANT_TRUNK_FRACTION = 155.5 / 384;
+
 /**
  * Rare buried decorations that draw well outside their own tile's cell - the skeleton (2
  * cells tall) and the giant root system under a large tree's trunk (6x5 cells). Same
@@ -267,8 +281,14 @@ export function drawUndergroundDecorations(ctx, map, startCol, endCol, startRow,
     if (feature?.type !== "tree" || feature.size !== "large") continue;
     const trunkRow = map.surfaceRow + 1;
     if (!map.getTile(col, trunkRow).solid) continue;
-    const px = originX + (col - Math.floor(spanCols / 2)) * tileSize;
-    const py = originY + trunkRow * tileSize;
+    // The trunk sits at world x [col,col+1), centered at col+0.5 - align the sprite's own
+    // connection point (not its bounding-box center) to that, the same way a carrot's bottom
+    // is centered directly under its top rather than under the middle of its whole sprite.
+    const px = originX + (col + 0.5 - ROOT_GIANT_TRUNK_FRACTION * spanCols) * tileSize;
+    // The sprite's own top tile-row is empty padding (its actual root content starts one row
+    // down, at native pixel y=64 of the 320px-tall extract) - shift up by that row so the
+    // visible root connects right at trunkRow, not one tile below it.
+    const py = originY + (trunkRow - 1) * tileSize;
     ctx.drawImage(rootGiantSprite, px, py, tileSize * spanCols, tileSize * spanRows);
   }
 }
