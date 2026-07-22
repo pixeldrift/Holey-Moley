@@ -148,17 +148,21 @@ function _drawBurrowMound(ctx, col, px, py, tileSize) {
   ctx.drawImage(img, px, py, tileSize, tileSize);
 }
 
-// The edge of an opening 2+ tiles wide: burrow_wide is a single 64x64 sprite holding a grassy
-// clump in each bottom corner - the left half faces outward on the opening's left edge, the
-// right half on its right edge, each stretched 2x to fill its own full tile (matching how the
-// halves would sit if the whole sprite were stretched across a real two-tile gap). Sky-blue
-// fill first since the sprite's own transparent margins would otherwise let the decorative
-// background hills bleed through.
+// The edge of an opening 2+ tiles wide: burrow_wide is drawn at the same native scale as every
+// other terrain sprite (no stretching), then masked to just its left or right half - the left
+// half shows on the opening's left edge, the right half on its right edge. Sky-blue fill first
+// since the sprite's own transparent margins would otherwise let the decorative background
+// hills bleed through.
 function _drawBurrowWideHalf(ctx, px, py, tileSize, side) {
   ctx.fillStyle = "#8fd6ee";
   ctx.fillRect(px, py, tileSize, tileSize);
-  const sx = side === "left" ? 0 : 32;
-  ctx.drawImage(burrowWideSprite, sx, 0, 32, 64, px, py, tileSize, tileSize);
+  const halfW = tileSize / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(side === "left" ? px : px + halfW, py, halfW, tileSize);
+  ctx.clip();
+  ctx.drawImage(burrowWideSprite, px, py, tileSize, tileSize);
+  ctx.restore();
 }
 
 // The four points of a tile, in canvas order, used to build the triangular clip paths below.
