@@ -504,8 +504,17 @@ export class CreatureManager {
       return;
     }
 
-    if (isSolid(aheadX, aheadY)) {
-      // Concave (inside) corner: a wall blocks the path ahead - turn to follow it.
+    // Concave (inside) corner: a wall blocks the path ahead - turn to follow it. This has to be
+    // shape-aware (isEdgeSolid on the ant's OWN foot-level face, i.e. the face opposite its
+    // wall - not just isSolid) or an ant walking into a diagonal notch carved by an upward-
+    // sloping mole dig (e.g. the tile directly ahead is diagonally shaved but still solid
+    // material elsewhere in the same tile) would wrongly treat it as a flat wall and climb,
+    // rather than recognizing its foot-level face is actually open. Getting this wrong doesn't
+    // just misroute one step - a still-solid neighbor tile a climbing ant meets next can trip
+    // the same unaware check again, and the two turns can cancel out into a permanent loop
+    // (confirmed: without this fix, an ant approaching a single upward diagonal notch from its
+    // own row cycles forever between climbing up and wrapping back down, never passing through).
+    if (isSolid(aheadX, aheadY) && map.isEdgeSolid(aheadX, aheadY, -c.wallDx, -c.wallDy)) {
       const newWallDx = c.travelDx, newWallDy = c.travelDy;
       const newTravelDx = -c.wallDx, newTravelDy = -c.wallDy;
       this._resolveAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, ANT_CORNER_TURN_CHANCE, stats.moveIntervalMs);
