@@ -285,7 +285,10 @@ export function drawUndergroundDecorations(ctx, map, startCol, endCol, startRow,
     // connection point (not its bounding-box center) to that, the same way a carrot's bottom
     // is centered directly under its top rather than under the middle of its whole sprite.
     const px = originX + (col + 0.5 - ROOT_GIANT_TRUNK_FRACTION * spanCols) * tileSize;
-    const py = originY + trunkRow * tileSize;
+    // The sprite's own top tile-row is empty padding (its actual root content starts one row
+    // down, at native pixel y=64 of the 320px-tall extract) - shift up by that row so the
+    // visible root connects right at trunkRow, not one tile below it.
+    const py = originY + (trunkRow - 1) * tileSize;
     ctx.drawImage(rootGiantSprite, px, py, tileSize * spanCols, tileSize * spanRows);
   }
 }
