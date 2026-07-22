@@ -54,6 +54,27 @@ export { MOVE_ACTION };
 // The label names the corner whose triangle is REMOVED (the opposite triangle stays solid).
 export const CORNER = { NONE: 0, NE: 1, NW: 2, SE: 3, SW: 4 };
 
+// The two edges (by compass letter) that stay fully solid for each cut - the ones touching
+// the corner diagonally opposite the one removed. E.g. an SW cut leaves the NE corner's own N
+// and E edges fully intact; its S and W edges are open along nearly their whole length. See
+// TileMap.isEdgeSolid/diagonalSlopeDir.
+const CORNER_SOLID_EDGES = {
+  [CORNER.SW]: "NE",
+  [CORNER.NE]: "SW",
+  [CORNER.SE]: "NW",
+  [CORNER.NW]: "SE",
+};
+
+// Which edge (by compass letter) of a tile is shared with a creature approaching it from
+// (wallDx,wallDy) - the vector FROM the creature's open cell TO that tile.
+function _edgeForApproach(wallDx, wallDy) {
+  if (wallDy === 1) return "N";
+  if (wallDy === -1) return "S";
+  if (wallDx === 1) return "W";
+  if (wallDx === -1) return "E";
+  return null;
+}
+
 export class TileMap {
   constructor(width, height, { skyRows = 3, seed } = {}) {
     this.width = width;
@@ -161,6 +182,41 @@ export class TileMap {
     } else if (existing !== corner) {
       this.digOut(x, y);
     }
+  }
+
+  /**
+   * A corner cut always leaves one "dominant" corner - diagonally opposite the one removed -
+   * whose two adjacent edges stay fully solid; the other two edges (touching the cut corner
+   * itself) are open along almost their entire length, save for the one point where the
+   * diagonal line touches them. Shared by anything that hugs a wall (ants today, worms and
+   * the mole eventually) so a diagonally-dug tunnel reads as a real 45 degree surface instead
+   * of a tile's plain rectangular edge.
+   *
+   * True if the side of tile (col,row) facing a creature approaching from (wallDx,wallDy) -
+   * the direction FROM the creature's open cell TO this tile - is fully solid, safe to cling
+   * to as an ordinary flat wall. False means that edge has been diagonally cut away almost
+   * along its whole length, and the creature should instead follow the cut's 45 degree slope
+   * toward this tile's still-solid corner - see diagonalSlopeDir.
+   */
+  isEdgeSolid(col, row, wallDx, wallDy) {
+    const cut = this.getCornerCut(col, row);
+    if (cut === CORNER.NONE) return true;
+    const dominant = CORNER_SOLID_EDGES[cut];
+    const edge = _edgeForApproach(wallDx, wallDy);
+    return edge != null && dominant.includes(edge);
+  }
+
+  /**
+   * For a corner-cut tile whose approached edge ISN'T fully solid (isEdgeSolid returned
+   * false), the direction a creature should travel to follow the cut's 45 degree slope and
+   * stay against real solid ground - a diagonal step running alongside the cut line toward
+   * this tile's still-solid dominant corner. Returns null if the tile has no corner cut at all.
+   */
+  diagonalSlopeDir(col, row) {
+    const cut = this.getCornerCut(col, row);
+    const dominant = CORNER_SOLID_EDGES[cut];
+    if (!dominant) return null;
+    return { dx: dominant.includes("E") ? 1 : -1, dy: dominant.includes("S") ? 1 : -1 };
   }
 
   /** True if this open cell has a solid floor directly beneath it (surface bugs walk here). */

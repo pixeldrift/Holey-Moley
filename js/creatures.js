@@ -89,6 +89,11 @@ class Creature {
       // drops straight down (see _beginAntFall/_tickAntFall) until it lands on solid ground
       // again, rather than continuing to "walk" along ground that no longer exists.
       this.falling = false;
+      // Non-null only during a diagonal-slope glide (see _beginAntDiagonal) - a cosmetic-only
+      // rotation override (the true 45 degree bisector) used instead of wallAngle(wallDx,wallDy)
+      // while wallDx/wallDy have already snapped to their final post-turn cardinal values.
+      this._diagonalDx = null;
+      this._diagonalDy = null;
     }
   }
 }
@@ -239,6 +244,8 @@ export class CreatureManager {
         c.col = c._pendingCol;
         c.row = c._pendingRow;
         c.isBusy = false;
+        c._diagonalDx = null;
+        c._diagonalDy = null;
       }
       return;
     }
@@ -474,15 +481,10 @@ export class CreatureManager {
     }
 
     if (!map.hasFloorBelow(nc, c.row)) {
-      if (Math.random() < 0.5) {
-        c.travelDx *= -1;
-        c._waitTimer = stats.moveIntervalMs * 0.4;
-        return;
-      }
       // Commit to the hole: curl down into it - same shape as any other corner (see
-      // _beginAntCorner), just starting from the surface instead of a dug tunnel wall.
+      // _resolveAntCorner), just starting from the surface instead of a dug tunnel wall.
       const newWallDx = -c.travelDx, newWallDy = 0;
-      this._beginAntCorner(c, newWallDx, newWallDy, 0, 1, stats.moveIntervalMs);
+      this._resolveAntCorner(c, newWallDx, newWallDy, 0, 1, 0.5, stats.moveIntervalMs);
       return;
     }
 
@@ -491,8 +493,8 @@ export class CreatureManager {
 
   // Generic wall-following, valid regardless of which surface (floor/wall/ceiling) the ant is
   // currently clinging to. A corner is a real 90-degree bend where the wall it's hugging either
-  // blocks the path ahead (concave) or drops away at an edge (convex) - either way it's the
-  // exact same move: see _beginAntCorner, which rotates instantly and never floats.
+  // blocks the path ahead (concave) or drops away at an edge (convex) - either way it's handled
+  // by _resolveAntCorner, which also detects the diagonal-dig case (see below).
   _stepAntTunnel(c) {
     const map = this.map;
     const stats = CREATURE_STATS.ANT;
@@ -504,13 +506,7 @@ export class CreatureManager {
       // Concave (inside) corner: a wall blocks the path ahead - turn to follow it.
       const newWallDx = c.travelDx, newWallDy = c.travelDy;
       const newTravelDx = -c.wallDx, newTravelDy = -c.wallDy;
-      if (Math.random() < ANT_CORNER_TURN_CHANCE) {
-        c.travelDx *= -1;
-        c.travelDy *= -1;
-        c._waitTimer = stats.moveIntervalMs * 0.4;
-        return;
-      }
-      this._beginAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, stats.moveIntervalMs);
+      this._resolveAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, ANT_CORNER_TURN_CHANCE, stats.moveIntervalMs);
       return;
     }
 
@@ -519,18 +515,35 @@ export class CreatureManager {
       // Convex (outside) corner: the wall it was hugging drops away at an edge - wrap around it.
       const newWallDx = -c.travelDx, newWallDy = -c.travelDy;
       const newTravelDx = c.wallDx, newTravelDy = c.wallDy;
-      if (Math.random() < ANT_CORNER_TURN_CHANCE) {
-        c.travelDx *= -1;
-        c.travelDy *= -1;
-        c._waitTimer = stats.moveIntervalMs * 0.4;
-        return;
-      }
-      this._beginAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, stats.moveIntervalMs);
+      this._resolveAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, ANT_CORNER_TURN_CHANCE, stats.moveIntervalMs);
       return;
     }
 
     // Flat stretch of wall - keep walking.
     this._beginAntStraight(c, aheadX, aheadY, stats.moveIntervalMs);
+  }
+
+  // Shared by every "the wall doesn't continue straight" transition - concave, convex, and the
+  // surface-to-hole case. First rolls the usual chance to turn back instead of committing to
+  // the new direction; if the wall tile it's about to commit to has had its near edge cut away
+  // by a diagonal mole dig (see tiles.js isEdgeSolid), there's no square corner to walk around
+  // at all - the ant follows the resulting 45 degree slope in a single diagonal glide (see
+  // _beginAntDiagonal), the same physical shape the mole's own tunnel actually has. Otherwise
+  // it's a real 90-degree bend, handled by the classic two-leg _beginAntCorner.
+  _resolveAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, turnBackChance, interval) {
+    if (Math.random() < turnBackChance) {
+      c.travelDx *= -1;
+      c.travelDy *= -1;
+      c._waitTimer = interval * 0.4;
+      return;
+    }
+    const { newCol, newRow } = this._antCornerTarget(c, newWallDx, newWallDy, newTravelDx, newTravelDy);
+    const wallCol = newCol + newWallDx, wallRow = newRow + newWallDy;
+    if (!this.map.isEdgeSolid(wallCol, wallRow, newWallDx, newWallDy)) {
+      this._beginAntDiagonal(c, newWallDx, newWallDy, newTravelDx, newTravelDy, newCol, newRow, interval);
+    } else {
+      this._beginAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, interval);
+    }
   }
 
   // A plain straight glide: same wall, same rotation, just moves to the next cell's own
@@ -553,10 +566,21 @@ export class CreatureManager {
     c._wallRow = toRow + c.wallDy;
   }
 
-  // Every corner - concave or convex, tunnel or surface-to-hole - reduces to the same two-leg
-  // glide: the ant keeps moving in its OLD direction until its feet reach the exact corner
-  // vertex (the point where the old wall-line ends), then picks up the NEW direction from that
-  // same point and keeps going. Rotation only changes at the instant leg 2 begins - it's never
+  // The vertex (exact corner point, where the old wall-line ends) and the new cell an ant
+  // lands in once it's fully turned - shared by the classic two-leg corner and the diagonal-
+  // slope glide below, since both start from the same geometric point.
+  _antCornerTarget(c, newWallDx, newWallDy, newTravelDx, newTravelDy) {
+    const vertexX = c.px + c.travelDx * 0.5;
+    const vertexY = c.py + c.travelDy * 0.5;
+    const newCol = Math.round(vertexX + newTravelDx * 0.5 - newWallDx * 0.5 - 0.5);
+    const newRow = Math.round(vertexY + newTravelDy * 0.5 - newWallDy * 0.5 - 0.5);
+    return { vertexX, vertexY, newCol, newRow };
+  }
+
+  // Every ordinary (non-diagonal) corner - concave or convex, tunnel or surface-to-hole -
+  // reduces to the same two-leg glide: the ant keeps moving in its OLD direction until its
+  // feet reach the exact corner vertex, then picks up the NEW direction from that same point
+  // and keeps going. Rotation only changes at the instant leg 2 begins - it's never
   // interpolated - so the sprite's feet are on real solid ground for the whole transition,
   // whichever leg it's currently on. Both legs are always exactly half a tile, so a full corner
   // takes exactly as long as a straight tile - no special-casing needed for which kind of
@@ -567,10 +591,7 @@ export class CreatureManager {
   // doesn't change until leg 2 actually starts (see _beginAntLeg) - there's never a frame where
   // it's derived from an in-between position that doesn't correspond to a real solid cell.
   _beginAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, interval) {
-    const vertexX = c.px + c.travelDx * 0.5;
-    const vertexY = c.py + c.travelDy * 0.5;
-    const newCol = Math.round(vertexX + newTravelDx * 0.5 - newWallDx * 0.5 - 0.5);
-    const newRow = Math.round(vertexY + newTravelDy * 0.5 - newWallDy * 0.5 - 0.5);
+    const { vertexX, vertexY, newCol, newRow } = this._antCornerTarget(c, newWallDx, newWallDy, newTravelDx, newTravelDy);
     const newAnchor = _antAnchor(newCol, newRow, newWallDx, newWallDy);
 
     c._fromX = c.px; c._fromY = c.py;
@@ -586,6 +607,45 @@ export class CreatureManager {
       toX: newAnchor.x, toY: newAnchor.y, duration: interval * 0.5,
       wallCol: newCol + newWallDx, wallRow: newRow + newWallDy,
     };
+  }
+
+  // The mole's diagonal dig doesn't remove a whole tile at each "elbow" - it shaves one
+  // triangular corner off, leaving that tile's near edge open along almost its entire length
+  // (see tiles.js isEdgeSolid/diagonalSlopeDir). There's no square corner to walk around there
+  // at all, so instead of the two-leg cardinal wrap (old anchor -> vertex -> new anchor, each
+  // leg length 0.5), the ant cuts straight from the old anchor to the new one in a single 45
+  // degree glide - the real physical shape of that surface, and literally the same "shave the
+  // corner off" idea applied to the ant's own path. That straight line has length 0.5*sqrt(2)
+  // (the hypotenuse of the two half-tile legs it replaces, which are perpendicular), shorter
+  // than the 1.0 total of those two legs, so its duration scales down by the same 1/sqrt(2)
+  // factor to keep the ant's walking speed constant through the turn.
+  // wallDx/wallDy/travelDx/travelDy and _wallCol/_wallRow all switch to their final (post-turn)
+  // values immediately, same as a corner's leg 2 - only the rendered angle is different (see
+  // drawCreature), a pure cosmetic 45 degree bisector rather than either cardinal angle.
+  _beginAntDiagonal(c, newWallDx, newWallDy, newTravelDx, newTravelDy, newCol, newRow, interval) {
+    const newAnchor = _antAnchor(newCol, newRow, newWallDx, newWallDy);
+    // Bisects the OLD and NEW cardinal wall directions - the true 45 degree angle of the cut
+    // line itself (old and new walls are always perpendicular unit vectors, so their sum is a
+    // valid diagonal one) - captured before wallDx/wallDy below are overwritten to their final
+    // values. Cleared once the glide lands (see _updateAnt's isBusy-completion branch).
+    c._diagonalDx = c.wallDx + newWallDx;
+    c._diagonalDy = c.wallDy + newWallDy;
+
+    c._fromX = c.px; c._fromY = c.py;
+    c._toX = newAnchor.x; c._toY = newAnchor.y;
+    c._elapsed = 0;
+    c._duration = interval / Math.SQRT2;
+    c.isBusy = true;
+    c._waitTimer = 0;
+    c._pendingCol = newCol;
+    c._pendingRow = newRow;
+    c._pendingLeg = null;
+    c.wallDx = newWallDx;
+    c.wallDy = newWallDy;
+    c.travelDx = newTravelDx;
+    c.travelDy = newTravelDy;
+    c._wallCol = newCol + newWallDx;
+    c._wallRow = newRow + newWallDy;
   }
 
   // Starts the second leg of a corner once the first (to the vertex) finishes - rotation snaps
@@ -699,6 +759,15 @@ function _wallAngle(wallDx, wallDy) {
   return Math.atan2(-wallDx, wallDy);
 }
 
+// During a diagonal-slope glide (see _beginAntDiagonal) wallDx/wallDy have already snapped to
+// their final post-turn cardinal values, but the ant's actual path is a straight 45 degree line -
+// c._diagonalDx/_diagonalDy (the old+new wall vectors summed) IS that line's direction, so the
+// same rotate-onto-(0,1) derivation used by _wallAngle applies to it directly.
+function _antRenderAngle(c) {
+  if (c._diagonalDx != null) return Math.atan2(-c._diagonalDx, c._diagonalDy);
+  return _wallAngle(c.wallDx, c.wallDy);
+}
+
 export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   const t = nowMs / 1000;
   const s = tileSize / 48;
@@ -709,7 +778,7 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
     // to plant its feet - no cell-centering offset needed, unlike the other creature types.
     ctx.save();
     ctx.translate(screenX, screenY);
-    ctx.rotate(_wallAngle(c.wallDx, c.wallDy));
+    ctx.rotate(_antRenderAngle(c));
     // Flip so the ant visually walks the direction it's actually traveling, whichever surface
     // it's currently on - "local right" (unflipped) is the wall direction rotated 90deg CCW.
     const localRightDx = c.wallDy, localRightDy = -c.wallDx;
