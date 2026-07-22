@@ -65,8 +65,13 @@ export class Mole {
     return this.actionTarget !== null;
   }
 
-  /** Request movement in a grid direction (8-way - diagonals dig/walk/climb too). */
-  requestMove(dx, dy) {
+  /** Request movement in a grid direction (8-way). By default this only ever walks/climbs
+   *  through already-open tunnel (including a diagonal tile's already-open corner, without
+   *  digging - see TileMap.canEnter) - it never carves new tunnel on its own. Pass digging=true
+   *  (held down by the player, see InputController.isDigging) to also dig through a blocked
+   *  diggable wall, same as any other move; without it, a blocked wall is bumped into exactly
+   *  like impassable rock, so building a tunnel is always an intentional act. */
+  requestMove(dx, dy, digging = false) {
     if (this.state === "sleep") return;
     if (this.isBusy) return;
     dx = Math.sign(dx);
@@ -89,7 +94,7 @@ export class Mole {
     const targetTile = this.map.getTile(targetCol, targetRow);
 
     if (!this.map.canEnter(targetCol, targetRow, dx, dy)) {
-      if (!targetTile.diggable) {
+      if (!targetTile.diggable || !digging) {
         this._bump();
         return;
       }

@@ -16,6 +16,7 @@ const KEY_DIRS = {
   ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
   KeyW: [0, -1], KeyS: [0, 1], KeyA: [-1, 0], KeyD: [1, 0],
 };
+const DIG_KEY = "Space"; // held down (not tapped) to make digging into a wall intentional
 
 export class InputController {
   constructor(canvas, { getMoleScreenPos } = {}) {
@@ -29,6 +30,8 @@ export class InputController {
     this._startX = 0;
     this._startY = 0;
     this.onStep = null; // (dx,dy) callback for taps
+    this._digKeyHeld = false;
+    this._digButtonHeld = false;
 
     this._bind();
   }
@@ -36,26 +39,54 @@ export class InputController {
   _bind() {
     window.addEventListener("keydown", (e) => {
       const dir = KEY_DIRS[e.code];
-      if (!dir) return;
-      if (!this._activeKeys.has(e.code)) {
-        this._activeKeys.add(e.code);
-        this._recomputeKeyDir();
+      if (dir) {
+        if (!this._activeKeys.has(e.code)) {
+          this._activeKeys.add(e.code);
+          this._recomputeKeyDir();
+        }
+        return;
+      }
+      if (e.code === DIG_KEY) {
+        e.preventDefault(); // stop Space from scrolling the page / clicking a focused button
+        this._digKeyHeld = true;
       }
     });
     window.addEventListener("keyup", (e) => {
       if (this._activeKeys.delete(e.code)) {
         this._recomputeKeyDir();
       }
+      if (e.code === DIG_KEY) this._digKeyHeld = false;
     });
     window.addEventListener("blur", () => {
       this._activeKeys.clear();
       this._recomputeKeyDir();
+      this._digKeyHeld = false;
+      this._digButtonHeld = false;
     });
 
     this.canvas.addEventListener("pointerdown", (e) => this._onPointerDown(e));
     this.canvas.addEventListener("pointermove", (e) => this._onPointerMove(e));
     this.canvas.addEventListener("pointerup", (e) => this._onPointerUp(e));
     this.canvas.addEventListener("pointercancel", (e) => this._onPointerUp(e));
+  }
+
+  /** Wires an on-screen button as a hold-to-dig control - a separate element from the canvas,
+   *  so it doesn't interfere with the canvas's own pointer capture for move-dragging. */
+  bindDigButton(el) {
+    const setHeld = (held) => {
+      this._digButtonHeld = held;
+      el.classList.toggle("active", held);
+    };
+    el.addEventListener("pointerdown", (e) => { e.preventDefault(); setHeld(true); });
+    el.addEventListener("pointerup", () => setHeld(false));
+    el.addEventListener("pointercancel", () => setHeld(false));
+    el.addEventListener("pointerleave", () => setHeld(false));
+  }
+
+  /** True while the player is holding down the dig control (keyboard or on-screen button) -
+   *  see Mole.requestMove's digging parameter. */
+  isDigging() {
+    return this._digKeyHeld || this._digButtonHeld;
   }
 
   _recomputeKeyDir() {

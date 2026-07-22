@@ -28,8 +28,9 @@ export class Game {
     this.input = new InputController(canvas, {
       getMoleScreenPos: () => this._moleScreenPos(),
     });
+    this.input.bindDigButton(document.getElementById("btn-dig"));
     this.input.onStep = (dx, dy) => {
-      if (this.state === "playing") this.mole.requestMove(dx, dy);
+      if (this.state === "playing") this.mole.requestMove(dx, dy, this.input.isDigging());
     };
 
     this._bindHud();
@@ -166,7 +167,7 @@ export class Game {
     if (this.mole.isBusy) return;
     const dir = this.input.getDirection();
     if (dir.dx !== 0 || dir.dy !== 0) {
-      this.mole.requestMove(dir.dx, dir.dy);
+      this.mole.requestMove(dir.dx, dir.dy, this.input.isDigging());
     }
   }
 
