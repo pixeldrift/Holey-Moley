@@ -193,6 +193,13 @@ html, body {
   font-size: 28px;
 }
 
+.start-mole {
+  display: block;
+  width: 140px;
+  height: auto;
+  margin: 0 auto 10px;
+}
+
 .overlay-card h2 {
   margin: 0 0 14px;
 }

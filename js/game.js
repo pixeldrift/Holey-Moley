@@ -3,7 +3,7 @@ import { Mole, drawMole } from "./mole.js";
 import { InputController } from "./input.js";
 import { HUD } from "./hud.js";
 import { CreatureManager, drawCreature, drawWorm, initCreatureSprites } from "./creatures.js";
-import { drawTerrainTile, drawBackgroundHills, drawSurfaceDecorations, initTextures } from "./textures.js";
+import { drawTerrainTile, drawBackgroundHills, drawSurfaceDecorations, drawUndergroundDecorations, initTextures } from "./textures.js";
 import { Profile } from "./profile.js";
 
 const TILE_SIZE = 48;
@@ -223,6 +223,7 @@ export class Game {
     }
 
     drawSurfaceDecorations(ctx, this.map, startCol, endCol, originX, originY, TILE_SIZE);
+    drawUndergroundDecorations(ctx, this.map, startCol, endCol, startRow, endRow, originX, originY, TILE_SIZE);
 
     // Creatures, culled to viewport.
     for (const c of this.creatures.list) {
@@ -234,7 +235,7 @@ export class Game {
         // to be (overlaid on dirt or resting on an open floor - see _wormCanEnter).
         const margin = TILE_SIZE * 6;
         if (x < -margin || x > viewW + margin || y < -margin || y > viewH + margin) continue;
-        drawWorm(ctx, c, originX, originY, TILE_SIZE);
+        drawWorm(ctx, this.map, c, originX, originY, TILE_SIZE);
         continue;
       }
       if (x < -TILE_SIZE || x > viewW + TILE_SIZE || y < -TILE_SIZE || y > viewH + TILE_SIZE) continue;
