@@ -49,20 +49,25 @@ export const TILE = {
 const MOVE_ACTION = { WALK: "walk", CLIMB: "climb", DIG: "dig" };
 export { MOVE_ACTION };
 
-// A "corner cut" marks a solid tile as having one of its triangular halves opened up -
-// this is what turns a diagonal dig from a blocky staircase into a smooth 45 degree tunnel.
-// The label names the corner whose triangle is REMOVED (the opposite triangle stays solid).
-export const CORNER = { NONE: 0, NE: 1, NW: 2, SE: 3, SW: 4 };
+// A diggable tile's SHAPE: FULL is an ordinary whole tile, solid on every side. NE/NW/SE/SW
+// mean the tile has been diagonally halved by a 45 degree dig - solid material fills the
+// tile's corner of that name, and the opposite corner is open, walkable space. This is a real
+// collision surface, not just a decoration: the mole can walk/climb straight through a
+// diagonal tile's open corner without digging (see TileMap.canEnter), and any wall-hugging
+// creature (ants today, worms later) can tell which of a tile's edges are solid ground versus
+// open air (see isEdgeSolid/diagonalSlopeDir) instead of treating every diggable tile as one
+// uniform solid block.
+export const SHAPE = { FULL: 0, NE: 1, NW: 2, SE: 3, SW: 4 };
 
-// The two edges (by compass letter) that stay fully solid for each cut - the ones touching
-// the corner diagonally opposite the one removed. E.g. an SW cut leaves the NE corner's own N
-// and E edges fully intact; its S and W edges are open along nearly their whole length. See
-// TileMap.isEdgeSolid/diagonalSlopeDir.
-const CORNER_SOLID_EDGES = {
-  [CORNER.SW]: "NE",
-  [CORNER.NE]: "SW",
-  [CORNER.SE]: "NW",
-  [CORNER.NW]: "SE",
+// The two edges (by compass letter) that are solid for each diagonal shape - always just the
+// shape's own two letters, e.g. SHAPE.NE is solid along its N and E edges. The other two edges
+// are open along almost their entire length, save for the single point where the diagonal cut
+// line touches them. See TileMap.isEdgeSolid/diagonalSlopeDir.
+const SHAPE_EDGES = {
+  [SHAPE.NE]: "NE",
+  [SHAPE.NW]: "NW",
+  [SHAPE.SE]: "SE",
+  [SHAPE.SW]: "SW",
 };
 
 // Which edge (by compass letter) of a tile is shared with a creature approaching it from
@@ -84,7 +89,7 @@ export class TileMap {
     this.startCol = Math.floor(width / 2);
     this.grid = new Array(width * height);
     this.food = new Uint8Array(width * height); // holds FOOD_ID codes
-    this.cornerCuts = new Uint8Array(width * height); // holds CORNER codes
+    this.shapes = new Uint8Array(width * height); // holds SHAPE codes
     this.tunnelOrigin = new Array(width * height).fill(null); // material a TUNNEL cell used to be
     this.surfaceFeatures = new Array(width).fill(null); // trees/bushes/flowers, keyed by column
     this.skeletonTile = null; // {col, row} of the map's single buried skeleton, or null
@@ -149,7 +154,7 @@ export class TileMap {
       this.tunnelOrigin[this.idx(x, y)] = removed;
     }
     this.setTile(x, y, TILE.TUNNEL);
-    if (this.inBounds(x, y)) this.cornerCuts[this.idx(x, y)] = CORNER.NONE;
+    if (this.inBounds(x, y)) this.shapes[this.idx(x, y)] = SHAPE.FULL;
     return removed;
   }
 
@@ -160,70 +165,84 @@ export class TileMap {
     return this.tunnelOrigin[this.idx(x, y)] || TILE.DIRT_SOFT;
   }
 
-  getCornerCut(x, y) {
-    if (!this.inBounds(x, y)) return CORNER.NONE;
-    return this.cornerCuts[this.idx(x, y)];
+  getShape(x, y) {
+    if (!this.inBounds(x, y)) return SHAPE.FULL;
+    return this.shapes[this.idx(x, y)];
   }
 
   /**
-   * Shaves the given triangular corner off a solid tile so a diagonal dig reads as one
-   * continuous 45 degree wall instead of two square steps. If the tile already has a
-   * *different* corner cut (a second diagonal path crossed it), just open the whole tile -
-   * that's rare enough not to need real multi-notch geometry.
+   * Halves the given tile diagonally so a diagonal dig reads as one continuous 45 degree wall
+   * instead of two square steps - solidCorner names which corner keeps its solid material (see
+   * SHAPE). If the tile already has a *different* diagonal shape (a second diagonal path
+   * crossed it), just open the whole tile - that's rare enough not to need real multi-notch
+   * geometry.
    */
-  cutCorner(x, y, corner) {
+  carveDiagonal(x, y, solidCorner) {
     if (!this.inBounds(x, y)) return;
     const tile = this.getTile(x, y);
     if (!tile.diggable) return;
     const i = this.idx(x, y);
-    const existing = this.cornerCuts[i];
-    if (existing === CORNER.NONE) {
-      this.cornerCuts[i] = corner;
-    } else if (existing !== corner) {
+    const existing = this.shapes[i];
+    if (existing === SHAPE.FULL) {
+      this.shapes[i] = solidCorner;
+    } else if (existing !== solidCorner) {
       this.digOut(x, y);
     }
   }
 
   /**
-   * A corner cut always leaves one "dominant" corner - diagonally opposite the one removed -
-   * whose two adjacent edges stay fully solid; the other two edges (touching the cut corner
-   * itself) are open along almost their entire length, save for the one point where the
-   * diagonal line touches them. Shared by anything that hugs a wall (ants today, worms and
-   * the mole eventually) so a diagonally-dug tunnel reads as a real 45 degree surface instead
-   * of a tile's plain rectangular edge.
-   *
    * True if the side of tile (col,row) facing a creature approaching from (wallDx,wallDy) -
    * the direction FROM the creature's open cell TO this tile - is fully solid, safe to cling
    * to as an ordinary flat wall. False means that edge has been diagonally cut away almost
-   * along its whole length, and the creature should instead follow the cut's 45 degree slope
-   * toward this tile's still-solid corner - see diagonalSlopeDir.
+   * along its whole length (see SHAPE), and the creature should instead follow the cut's 45
+   * degree slope toward this tile's solid corner - see diagonalSlopeDir. Always true for a
+   * FULL (non-diagonal) tile, regardless of approach direction.
    */
   isEdgeSolid(col, row, wallDx, wallDy) {
-    const cut = this.getCornerCut(col, row);
-    if (cut === CORNER.NONE) return true;
-    const dominant = CORNER_SOLID_EDGES[cut];
+    const shape = this.getShape(col, row);
+    if (shape === SHAPE.FULL) return true;
+    const solidEdges = SHAPE_EDGES[shape];
     const edge = _edgeForApproach(wallDx, wallDy);
-    return edge != null && dominant.includes(edge);
+    return edge != null && solidEdges.includes(edge);
   }
 
   /**
-   * For a corner-cut tile whose approached edge ISN'T fully solid (isEdgeSolid returned
-   * false), the direction a creature should travel to follow the cut's 45 degree slope and
-   * stay against real solid ground - a diagonal step running alongside the cut line toward
-   * this tile's still-solid dominant corner. Returns null if the tile has no corner cut at all.
+   * For a diagonal tile whose approached edge ISN'T fully solid (isEdgeSolid returned false),
+   * the direction a creature should travel to follow the cut's 45 degree slope and stay
+   * against real solid ground - a diagonal step running alongside the cut line toward this
+   * tile's solid corner. Returns null for a FULL (non-diagonal) tile.
    */
   diagonalSlopeDir(col, row) {
-    const cut = this.getCornerCut(col, row);
-    const dominant = CORNER_SOLID_EDGES[cut];
-    if (!dominant) return null;
-    return { dx: dominant.includes("E") ? 1 : -1, dy: dominant.includes("S") ? 1 : -1 };
+    const shape = this.getShape(col, row);
+    const solidEdges = SHAPE_EDGES[shape];
+    if (!solidEdges) return null;
+    return { dx: solidEdges.includes("E") ? 1 : -1, dy: solidEdges.includes("S") ? 1 : -1 };
   }
 
-  /** True if this open cell has a solid floor directly beneath it (surface bugs walk here). */
+  /**
+   * True if an entity standing in the open cell at (col-fromDx,row-fromDy) can move directly
+   * into tile (col,row) - fromDx,fromDy is the direction FROM that open cell TO this tile,
+   * same convention as isEdgeSolid - without digging: either the tile isn't solid at all, or
+   * it's a diagonal tile (see SHAPE) and this is its open corner. A diagonal approach (both
+   * fromDx and fromDy nonzero) always requires digging - isEdgeSolid's edge-by-edge check only
+   * has a well-defined answer for a single cardinal direction, and every diagonal DIG already
+   * fully clears its destination tile (see Mole._completeAction), so free diagonal entry into
+   * a leftover diagonal shape from some earlier, unrelated dig never actually arises.
+   */
+  canEnter(col, row, fromDx, fromDy) {
+    const tile = this.getTile(col, row);
+    if (!tile.solid) return true;
+    if (fromDx !== 0 && fromDy !== 0) return false;
+    return this.getShape(col, row) !== SHAPE.FULL && !this.isEdgeSolid(col, row, fromDx, fromDy);
+  }
+
+  /** True if this open cell has a solid floor directly beneath it (surface bugs walk here) -
+   *  a diagonal tile only counts as floor if its upward-facing edge is the solid one. */
   hasFloorBelow(x, y) {
     const here = this.getTile(x, y);
     if (here.solid) return false;
-    return this.getTile(x, y + 1).solid;
+    const below = this.getTile(x, y + 1);
+    return below.solid && this.isEdgeSolid(x, y + 1, 0, 1);
   }
 
   _generate() {
@@ -396,7 +415,7 @@ export class TileMap {
     if (existing !== TILE.TUNNEL) this.tunnelOrigin[this.idx(x, y)] = existing;
     this.setTile(x, y, TILE.TUNNEL);
     this.setFoodId(x, y, FOOD_ID.NONE);
-    this.cornerCuts[this.idx(x, y)] = CORNER.NONE;
+    this.shapes[this.idx(x, y)] = SHAPE.FULL;
   }
 
   _pickDirtTile(depth, rng) {

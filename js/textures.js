@@ -5,7 +5,7 @@
 // Must call initTextures(sprites) once (with assets.js's loaded images) before any
 // drawTerrainTile call.
 
-import { TILE, CORNER } from "./tiles.js";
+import { TILE, SHAPE } from "./tiles.js";
 
 let sprites = null;
 let materials = null; // { grass: [img,img,img,img], sand: [...], ... }
@@ -96,9 +96,9 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
   const material = MATERIAL_FOR_TILE[tile.id];
   const variants = material ? materials[material] : null;
 
-  const cornerCut = tile.diggable ? map.getCornerCut(col, row) : CORNER.NONE;
-  if (cornerCut !== CORNER.NONE) {
-    _drawDiagonalTile(ctx, variants, col, row, cornerCut, px, py, tileSize);
+  const shape = tile.diggable ? map.getShape(col, row) : SHAPE.FULL;
+  if (shape !== SHAPE.FULL) {
+    _drawDiagonalTile(ctx, variants, col, row, shape, px, py, tileSize);
     return;
   }
 
@@ -182,14 +182,14 @@ function _tileCorners(px, py, tileSize) {
   };
 }
 
-// Given which corner's triangle was cut away, returns the 3 points of the SOLID triangle
-// that remains (always the corner diagonally opposite the one that was cut).
-function _solidTrianglePoints(cornerCut, corners) {
-  switch (cornerCut) {
-    case CORNER.SW: return [corners.NW, corners.NE, corners.SE]; // NE half solid
-    case CORNER.NE: return [corners.NW, corners.SW, corners.SE]; // SW half solid
-    case CORNER.SE: return [corners.NW, corners.NE, corners.SW]; // NW half solid
-    case CORNER.NW: return [corners.NE, corners.SE, corners.SW]; // SE half solid
+// Given the tile's diagonal SHAPE, returns the 3 points of its solid triangle - the named
+// corner plus the two corners at the ends of its two solid edges.
+function _solidTrianglePoints(shape, corners) {
+  switch (shape) {
+    case SHAPE.NE: return [corners.NW, corners.NE, corners.SE];
+    case SHAPE.NW: return [corners.NE, corners.NW, corners.SW];
+    case SHAPE.SE: return [corners.NE, corners.SE, corners.SW];
+    case SHAPE.SW: return [corners.NW, corners.SE, corners.SW];
     default: return null;
   }
 }
@@ -198,14 +198,14 @@ function _solidTrianglePoints(cornerCut, corners) {
 // cell first (that becomes the open half), then clip to the remaining solid triangle and paint
 // the material there at full brightness - the boundary is a single straight 45 degree line,
 // continuous with the neighboring tiles' own cuts.
-function _drawDiagonalTile(ctx, variants, col, row, cornerCut, px, py, tileSize) {
+function _drawDiagonalTile(ctx, variants, col, row, shape, px, py, tileSize) {
   // The open half is the current (not-yet-dug) tile's own material darkened, not a lookup -
-  // cutting a corner doesn't change the tile's identity, only digOut does.
+  // carving a diagonal doesn't change the tile's identity, only digOut does.
   _darkenedMaterialDraw(ctx, variants, col, row, px, py, tileSize);
   if (!variants) return;
 
   const corners = _tileCorners(px, py, tileSize);
-  const points = _solidTrianglePoints(cornerCut, corners);
+  const points = _solidTrianglePoints(shape, corners);
   if (!points) return;
 
   ctx.save();
