@@ -216,20 +216,24 @@ function _drawFlower(ctx, col, px, py, tileSize) {
 }
 
 // Carrot/beet/turnip each have their own dedicated top (greens) + bottom (bulb/root) art now -
-// no more tinting a shared carrot sprite. Cabbage is a single image (a whole head, no separate
-// underground part) drawn in the same row as the other veggies' bottoms, right where its food
-// tile actually is.
+// no more tinting a shared carrot sprite. Cabbage is handled separately in _drawVeggieGreens -
+// it's a single whole-head image with no underground part, so it isn't part of this table.
 function _getVeggieTiles(veggieType) {
   switch (veggieType) {
     case "BEET": return { top: sprites.beetTop, bottom: sprites.beetBottom };
     case "TURNIP": return { top: sprites.turnipTop, bottom: sprites.turnipBottom };
-    case "CABBAGE": return { top: null, bottom: sprites.cabbage };
     default: return { top: sprites.carrotTop, bottom: sprites.carrotBottom };
   }
 }
 
-// Greens (top) sit in the surface row cell, body one row down where the food tile actually is.
+// Greens (top) sit in the surface row cell, body one row down where the food tile actually is -
+// except cabbage, which is a single whole-head sprite that sits right on the ground like a real
+// cabbage would, not buried a row down with the other veggies' bulbs.
 function _drawVeggieGreens(ctx, col, px, py, tileSize, veggieType) {
+  if (veggieType === "CABBAGE") {
+    _drawTile(ctx, sprites.cabbage, px, py, tileSize);
+    return;
+  }
   const tiles = _getVeggieTiles(veggieType);
   if (tiles.top) _drawTile(ctx, tiles.top, px, py, tileSize);
   _drawTile(ctx, tiles.bottom, px, py + tileSize, tileSize);

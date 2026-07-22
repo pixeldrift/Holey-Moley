@@ -760,33 +760,84 @@ function _wormSegmentArt(c, i) {
   return { img: midBend, angle, flip };
 }
 
+function _drawWormSegment(ctx, placement, x, y, segSize) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(placement.angle);
+  ctx.scale(placement.flip ? -1 : 1, 1);
+  ctx.drawImage(placement.img, -segSize / 2, -segSize / 2, segSize, segSize);
+  ctx.restore();
+}
+
+// Reuses one offscreen canvas per worm (instead of allocating a fresh one every frame) to
+// render the glow silhouette into.
+function _wormGlowCanvas(c, w, h) {
+  if (!c._glowCanvas) c._glowCanvas = document.createElement("canvas");
+  const canvas = c._glowCanvas;
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  return canvas;
+}
+
+const WORM_GLOW_BLUR = 0.35; // fraction of segment size
+const WORM_GLOW_COLOR = "rgba(0, 0, 0, 0.5)";
+
 /**
  * Worms occupy a real trail of grid cells (Snake-style), so they need the camera origin
  * rather than a single screen position - called directly by game.js instead of going through
  * drawCreature. Each segment is drawn exactly at its settled half-tile position - no glide or
  * scaling animation between steps, just a snap from one position to the next (see
- * CreatureManager._tickWorm). Segments are visible everywhere they're allowed to travel:
- * overlaid on top of solid dirt while burrowing, or resting on an open tunnel floor/the grass
- * surface (see CreatureManager._wormCanEnter) - never floating in open air.
+ * CreatureManager._tickWorm). A segment overlaid inside solid dirt stays centered in its cell;
+ * one resting on an open floor (a dug-out tunnel or the grass surface) is shifted down so it
+ * sits directly on the ground plane instead of floating mid-cell.
+ *
+ * The whole body gets a single soft black glow rather than one per segment: every segment is
+ * first drawn into an offscreen buffer (reused per worm, not reallocated every frame), then that
+ * ONE flattened silhouette casts the shadow - so adjacent/overlapping segments never double up
+ * their glow at the seams the way stacking per-segment shadows would, and the glow always reads
+ * as one continuous halo around the whole worm rather than a chain of separate blobs.
  */
-export function drawWorm(ctx, c, originX, originY, tileSize) {
+export function drawWorm(ctx, map, c, originX, originY, tileSize) {
   if (!wormSegmentSprites || !c.trail) return;
   const segSize = tileSize * WORM_DISPLAY_SCALE;
   const segCount = c.trail.length - 1; // last slot is the hidden ghost, never drawn
+  if (segCount <= 0) return;
 
+  const placements = [];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (let i = 0; i < segCount; i++) {
     const { col, row } = c.trail[i];
     const { img, angle, flip } = _wormSegmentArt(c, i);
+    const cellCol = Math.round(col), cellRow = Math.round(row);
+    const onFloor = !map.getTile(cellCol, cellRow).solid;
     const screenX = originX + col * tileSize + tileSize / 2;
-    const screenY = originY + row * tileSize + tileSize / 2;
-
-    ctx.save();
-    ctx.translate(screenX, screenY);
-    ctx.rotate(angle);
-    ctx.scale(flip ? -1 : 1, 1);
-    ctx.drawImage(img, -segSize / 2, -segSize / 2, segSize, segSize);
-    ctx.restore();
+    const screenY = onFloor
+      ? originY + (row + 1) * tileSize - segSize / 2 // rest on the floor, not floating mid-cell
+      : originY + row * tileSize + tileSize / 2; // centered, overlaid in the surrounding dirt
+    placements.push({ img, angle, flip, screenX, screenY });
+    minX = Math.min(minX, screenX);
+    maxX = Math.max(maxX, screenX);
+    minY = Math.min(minY, screenY);
+    maxY = Math.max(maxY, screenY);
   }
+
+  const pad = segSize; // room for rotated corners plus the blur radius
+  minX -= pad; maxX += pad; minY -= pad; maxY += pad;
+  const bufW = Math.ceil(maxX - minX), bufH = Math.ceil(maxY - minY);
+  const buf = _wormGlowCanvas(c, bufW, bufH);
+  const bctx = buf.getContext("2d");
+  bctx.clearRect(0, 0, bufW, bufH);
+  for (const p of placements) {
+    _drawWormSegment(bctx, p, p.screenX - minX, p.screenY - minY, segSize);
+  }
+
+  ctx.save();
+  ctx.shadowColor = WORM_GLOW_COLOR;
+  ctx.shadowBlur = segSize * WORM_GLOW_BLUR;
+  ctx.drawImage(buf, minX, minY);
+  ctx.shadowColor = "transparent";
+  ctx.drawImage(buf, minX, minY);
+  ctx.restore();
 }
 
 const ANT_DISPLAY_SCALE = 0.5;
