@@ -215,14 +215,20 @@ export class CreatureManager {
   // just at decision points - so it never keeps "walking" across ground that no longer exists.
   // Only a REAL loss of support triggers this: a corner just switches which exact cell is
   // being tracked, at the same instant its wallDx/wallDy change, so a normal corner (nothing
-  // dug away) never has a moment where that cell is anything other than solid ground.
+  // dug away) never has a moment where that cell is anything other than solid ground. The same
+  // logic applies to a wall the mole reshapes into a diagonal tile (see tiles.js SHAPE) out
+  // from under an ant already resting on it - the tile's own solid flag never flips, only the
+  // specific face the ant is leaning on does, so that needs its own isEdgeSolid check. The
+  // c._diagonalDx == null guard excludes an ant mid-ramp: that's the one time clinging to a
+  // tile whose face isn't solid from the current wallDx/wallDy is deliberate, not a collapse.
   _updateAnt(c, dt, mole, onMoleHurt) {
     if (c.falling) {
       this._tickAntFall(c, dt);
       return;
     }
 
-    if (!this.map.getTile(c._wallCol, c._wallRow).solid) {
+    const wallTile = this.map.getTile(c._wallCol, c._wallRow);
+    if (!wallTile.solid || (c._diagonalDx == null && !this.map.isEdgeSolid(c._wallCol, c._wallRow, c.wallDx, c.wallDy))) {
       this._beginAntFall(c);
       return;
     }
@@ -276,7 +282,11 @@ export class CreatureManager {
     // Falling is gravity, not a stroll - noticeably faster than the walking pace.
     c.py += (dt / stats.moveIntervalMs) * ANT_FALL_SPEED_MULTIPLIER;
     c.row = Math.floor(c.py);
-    if (this.map.getTile(c.col, c.row).solid) {
+    // A diagonal tile (see tiles.js SHAPE) is only real ground to land on if its upward-facing
+    // edge is the solid one - falling straight down the open half of one (the same face a
+    // ramping ant would find not-solid from below) isn't a landing at all, just more open air
+    // to keep falling through, exactly like passing through an ordinary TUNNEL cell.
+    if (this.map.getTile(c.col, c.row).solid && this.map.isEdgeSolid(c.col, c.row, 0, 1)) {
       // Landed - clinging to the floor of whatever it fell onto, right where its feet first
       // touched it, then free to resume normal wall-following from here.
       c.falling = false;
