@@ -10,11 +10,9 @@
 </head>
 <body>
 <div id="app">
-  <canvas id="game"></canvas>
-
-  <!-- HUD overlay -->
-  <div id="hud">
-    <div id="hud-top-left" class="hud-corner">
+  <!-- HUD bar - a real layout row above the game viewport, not an overlay on top of it -->
+  <div id="hud-bar">
+    <div id="hud-top-left">
       <div id="score-box" class="hud-panel">
         <span class="hud-icon">⭐</span>
         <span id="score-value">0</span>
@@ -26,14 +24,16 @@
       </div>
     </div>
 
-    <div id="hud-top-right" class="hud-corner">
+    <div id="depth-indicator" class="hud-panel">Depth <span id="depth-value">0</span>ft</div>
+
+    <div id="hud-top-right">
       <button id="btn-mole" class="hud-btn" aria-label="Mole stats">🐹</button>
       <button id="btn-pause" class="hud-btn" aria-label="Pause">⏸</button>
       <button id="btn-settings" class="hud-btn" aria-label="Settings">⚙</button>
     </div>
-
-    <div id="depth-indicator" class="hud-panel">Depth <span id="depth-value">0</span>ft</div>
   </div>
+
+  <canvas id="game"></canvas>
 
   <!-- Start screen -->
   <div id="start-screen" class="overlay">

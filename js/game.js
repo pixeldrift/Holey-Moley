@@ -127,10 +127,18 @@ export class Game {
     this.viewH = h;
   }
 
+  // input.js compares this against pointer events' clientX/clientY, which are relative to the
+  // whole page/viewport - not the canvas element. That used to be the same thing when the
+  // canvas filled the entire viewport, but now the HUD bar pushes it down, so the canvas's own
+  // offset has to be added back in to land in the same coordinate space.
   _moleScreenPos() {
     const wx = this.mole.px * TILE_SIZE + TILE_SIZE / 2;
     const wy = this.mole.py * TILE_SIZE + TILE_SIZE / 2;
-    return { x: wx - this.camera.x + this.viewW / 2, y: wy - this.camera.y + this.viewH / 2 };
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: wx - this.camera.x + this.viewW / 2 + rect.left,
+      y: wy - this.camera.y + this.viewH / 2 + rect.top,
+    };
   }
 
   _loop(now) {
