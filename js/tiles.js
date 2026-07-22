@@ -66,6 +66,7 @@ export class TileMap {
     this.cornerCuts = new Uint8Array(width * height); // holds CORNER codes
     this.tunnelOrigin = new Array(width * height).fill(null); // material a TUNNEL cell used to be
     this.surfaceFeatures = new Array(width).fill(null); // trees/bushes/flowers, keyed by column
+    this.skeletonTile = null; // {col, row} of the map's single buried skeleton, or null
     this._rng = mulberry32(seed ?? Date.now());
     this._generate();
   }
@@ -216,6 +217,7 @@ export class TileMap {
 
     this._generateSurfaceFeatures(rng);
     this._carveStartingBurrow();
+    this._placeSkeleton(rng);
 
     // The very bottom row is always solid rock - a hard natural floor so there's nowhere
     // left to dig once you've gone deep enough, regardless of whatever depth-based material
@@ -276,6 +278,21 @@ export class TileMap {
         this._forceTunnel(x, y);
       }
     }
+  }
+
+  // A rare buried decoration - at most one per map, resting on a ROOT tile (see
+  // textures.js drawUndergroundDecorations). Picked once here, not at render time, so it
+  // can't accidentally show up more than once.
+  _placeSkeleton(rng) {
+    const candidates = [];
+    for (let y = this.surfaceRow + 1; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        if (this.getTile(x, y) === TILE.ROOT) candidates.push({ col: x, row: y });
+      }
+    }
+    this.skeletonTile = candidates.length
+      ? candidates[Math.floor(rng() * candidates.length)]
+      : null;
   }
 
   _forceTunnel(x, y) {

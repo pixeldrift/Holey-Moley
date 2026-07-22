@@ -779,8 +779,8 @@ function _wormGlowCanvas(c, w, h) {
   return canvas;
 }
 
-const WORM_GLOW_BLUR = 0.35; // fraction of segment size
-const WORM_GLOW_COLOR = "rgba(0, 0, 0, 0.5)";
+const WORM_GLOW_BLUR = 0.2; // fraction of segment size
+const WORM_GLOW_COLOR = "rgba(0, 0, 0, 0.7)";
 
 /**
  * Worms occupy a real trail of grid cells (Snake-style), so they need the camera origin

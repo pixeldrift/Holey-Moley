@@ -12,6 +12,9 @@ let materials = null; // { grass: [img,img,img,img], sand: [...], ... }
 let flowerSprites = null;
 let bushSprites = null;
 let burrowMoundSprites = null;
+let burrowWideSprite = null;
+let skeletonSprite = null;
+let rootGiantSprite = null;
 
 const MATERIAL_FOR_TILE = {
   SURFACE: "grass",
@@ -41,6 +44,9 @@ export function initTextures(loadedSprites) {
     { top: sprites.bush02, root: sprites.bush02Root },
   ];
   burrowMoundSprites = sprites.burrowMounds;
+  burrowWideSprite = sprites.burrowWide;
+  skeletonSprite = sprites.skeleton;
+  rootGiantSprite = sprites.rootGiant;
 }
 
 function hashTile(col, row) {
@@ -76,6 +82,10 @@ export function drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize) {
     const rightOpen = _isUnsupportedSurface(map, col + 1, row);
     if (!leftOpen && !rightOpen) {
       _drawBurrowMound(ctx, col, px, py, tileSize);
+    } else if (!leftOpen && rightOpen) {
+      _drawBurrowWideHalf(ctx, px, py, tileSize, "left");
+    } else if (leftOpen && !rightOpen) {
+      _drawBurrowWideHalf(ctx, px, py, tileSize, "right");
     } else {
       ctx.fillStyle = "#8fd6ee";
       ctx.fillRect(px, py, tileSize, tileSize);
@@ -136,6 +146,19 @@ function _drawBurrowMound(ctx, col, px, py, tileSize) {
   const rng = mulberry32(col * 9187 + 31);
   const img = burrowMoundSprites[Math.floor(rng() * burrowMoundSprites.length)];
   ctx.drawImage(img, px, py, tileSize, tileSize);
+}
+
+// The edge of an opening 2+ tiles wide: burrow_wide is a single 64x64 sprite holding a grassy
+// clump in each bottom corner - the left half faces outward on the opening's left edge, the
+// right half on its right edge, each stretched 2x to fill its own full tile (matching how the
+// halves would sit if the whole sprite were stretched across a real two-tile gap). Sky-blue
+// fill first since the sprite's own transparent margins would otherwise let the decorative
+// background hills bleed through.
+function _drawBurrowWideHalf(ctx, px, py, tileSize, side) {
+  ctx.fillStyle = "#8fd6ee";
+  ctx.fillRect(px, py, tileSize, tileSize);
+  const sx = side === "left" ? 0 : 32;
+  ctx.drawImage(burrowWideSprite, sx, 0, 32, 64, px, py, tileSize, tileSize);
 }
 
 // The four points of a tile, in canvas order, used to build the triangular clip paths below.
@@ -214,6 +237,35 @@ export function drawSurfaceDecorations(ctx, map, startCol, endCol, originX, orig
   for (let col = startCol; col <= endCol; col++) {
     const px = originX + col * tileSize;
     drawSurfaceDecoration(ctx, map, col, px, py, tileSize);
+  }
+}
+
+/**
+ * Rare buried decorations that draw well outside their own tile's cell - the skeleton (2
+ * cells tall) and the giant root system under a large tree's trunk (6x5 cells). Same
+ * separate-pass reasoning as drawSurfaceDecorations: drawn after the whole terrain loop so
+ * later rows/columns don't paint over them. Each is only drawn while its anchor tile is still
+ * solid/undug, so it disappears the moment the player digs into that spot.
+ */
+export function drawUndergroundDecorations(ctx, map, startCol, endCol, startRow, endRow, originX, originY, tileSize) {
+  const sk = map.skeletonTile;
+  if (sk && sk.col >= startCol && sk.col <= endCol && sk.row >= startRow - 1 && sk.row <= endRow + 1) {
+    if (map.getTile(sk.col, sk.row).solid) {
+      const px = originX + sk.col * tileSize;
+      const py = originY + sk.row * tileSize;
+      ctx.drawImage(skeletonSprite, px, py, tileSize, tileSize * 2);
+    }
+  }
+
+  const spanCols = 6, spanRows = 5;
+  for (let col = startCol; col <= endCol; col++) {
+    const feature = map.surfaceFeatures?.[col];
+    if (feature?.type !== "tree" || feature.size !== "large") continue;
+    const trunkRow = map.surfaceRow + 1;
+    if (!map.getTile(col, trunkRow).solid) continue;
+    const px = originX + (col - Math.floor(spanCols / 2)) * tileSize;
+    const py = originY + trunkRow * tileSize;
+    ctx.drawImage(rootGiantSprite, px, py, tileSize * spanCols, tileSize * spanRows);
   }
 }
 

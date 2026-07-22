@@ -25,7 +25,15 @@ const SOURCES = {
     "assets/root_overlay_1.png",
     "assets/root_overlay_2.png",
     "assets/root_overlay_3.png",
+    "assets/root_overlay_4.png",
+    "assets/root_overlay_5.png",
   ],
+  // A rare buried decoration - placed on at most one ROOT tile per map (see tiles.js
+  // TileMap.skeletonTile), 2 grid cells tall.
+  skeleton: "assets/skeleton.png",
+  // The biggest root art in the sheet, used under large trees' trunks in place of the small
+  // per-tile root overlays - 6x5 grid cells.
+  rootGiant: "assets/root_giant.png",
   treeTrunk: "assets/tree_trunk.png",
   bush01: "assets/bush_01.png",
   bush01Root: "assets/bush_01_root.png",
@@ -49,6 +57,10 @@ const SOURCES = {
   // A grassy mound with a dark opening - used only for a surface hole exactly one tile wide
   // (see textures.js), picked randomly per column between the two variants.
   burrowMounds: ["assets/burrow_01.png", "assets/burrow_02.png"],
+  // Sides of a surface opening wider than one tile - a single 64x64 sprite split in half:
+  // the left 32px used (stretched to a full tile) on the opening's left edge, the right 32px
+  // on its right edge (see textures.js _drawBurrowWideHalf).
+  burrowWide: "assets/burrow_wide.png",
   wormHead: "assets/worm_head.png",
   wormMid: "assets/worm_mid.png",
   wormTail: "assets/worm_tail.png",

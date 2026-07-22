@@ -3,7 +3,7 @@ import { Mole, drawMole } from "./mole.js";
 import { InputController } from "./input.js";
 import { HUD } from "./hud.js";
 import { CreatureManager, drawCreature, drawWorm, initCreatureSprites } from "./creatures.js";
-import { drawTerrainTile, drawBackgroundHills, drawSurfaceDecorations, initTextures } from "./textures.js";
+import { drawTerrainTile, drawBackgroundHills, drawSurfaceDecorations, drawUndergroundDecorations, initTextures } from "./textures.js";
 import { Profile } from "./profile.js";
 
 const TILE_SIZE = 48;
@@ -223,6 +223,7 @@ export class Game {
     }
 
     drawSurfaceDecorations(ctx, this.map, startCol, endCol, originX, originY, TILE_SIZE);
+    drawUndergroundDecorations(ctx, this.map, startCol, endCol, startRow, endRow, originX, originY, TILE_SIZE);
 
     // Creatures, culled to viewport.
     for (const c of this.creatures.list) {
