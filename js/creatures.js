@@ -490,6 +490,19 @@ export class CreatureManager {
       return;
     }
 
+    // A mole dig starting right at the surface only diagonally shapes the underground elbow -
+    // the grass tile itself isn't diggable, so cutCorner/carveDiagonal no-ops on it and the
+    // surface above reads as ordinary intact ground even though the floor just past it ramps
+    // down at 45 degrees instead of ending in a square drop (see tiles.js SHAPE). This is the
+    // very first place any ant ever meets a diagonal dig, since every ant starts on the
+    // surface - so it needs the same ramp check _stepAntTunnel does for its own floor-ahead,
+    // checked BEFORE concluding there's no floor at all.
+    const floorTile = map.getTile(nc, c.row + 1);
+    if (floorTile.solid && !map.isEdgeSolid(nc, c.row + 1, 0, 1)) {
+      this._beginAntRamp(c, nc, c.row + 1, stats.moveIntervalMs);
+      return;
+    }
+
     if (!map.hasFloorBelow(nc, c.row)) {
       // Commit to the hole: curl down into it - same shape as any other corner (see
       // _resolveAntCorner), just starting from the surface instead of a dug tunnel wall.
