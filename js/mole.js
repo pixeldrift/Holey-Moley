@@ -1,16 +1,16 @@
-import { MOVE_ACTION, CORNER } from "./tiles.js";
+import { MOVE_ACTION, SHAPE } from "./tiles.js";
 import { ENERGY, FOOD_TYPES, FOOD_ID_TO_TYPE } from "./constants.js";
 
 const WALK_DURATION = 220;
 const CLIMB_DURATION = 260;
 
-// Which corner of each of the two "elbow" tiles (the orthogonal neighbors flanking a
-// diagonal step) gets shaved off, keyed by the move's [dx,dy]. See tiles.js CORNER.
-const DIAGONAL_ELBOW_CORNERS = {
-  "1,1": [CORNER.SW, CORNER.NE],
-  "1,-1": [CORNER.NW, CORNER.SE],
-  "-1,1": [CORNER.SE, CORNER.NW],
-  "-1,-1": [CORNER.NE, CORNER.SW],
+// Which corner stays solid on each of the two "elbow" tiles (the orthogonal neighbors
+// flanking a diagonal step), keyed by the move's [dx,dy]. See tiles.js SHAPE.
+const DIAGONAL_ELBOW_SHAPES = {
+  "1,1": [SHAPE.NE, SHAPE.SW],
+  "1,-1": [SHAPE.SE, SHAPE.NW],
+  "-1,1": [SHAPE.NW, SHAPE.SE],
+  "-1,-1": [SHAPE.SW, SHAPE.NE],
 };
 
 export const MAX_ENERGY = ENERGY.MAX;
@@ -88,7 +88,7 @@ export class Mole {
 
     const targetTile = this.map.getTile(targetCol, targetRow);
 
-    if (targetTile.solid) {
+    if (!this.map.canEnter(targetCol, targetRow, dx, dy)) {
       if (!targetTile.diggable) {
         this._bump();
         return;
@@ -99,7 +99,9 @@ export class Mole {
       return;
     }
 
-    // Open space: climbing if there's any vertical component (includes diagonals), walking if purely horizontal.
+    // Open space - including walking/climbing straight through a diagonal tile's already-open
+    // corner without digging (see TileMap.canEnter) - climbing if there's any vertical
+    // component (includes diagonals), walking if purely horizontal.
     const isVertical = dy !== 0;
     const duration = (isVertical ? CLIMB_DURATION : WALK_DURATION) * distanceScale * this.speedFactor;
     const cost = isVertical ? ENERGY.CLIMB_COST : ENERGY.WALK_COST;
@@ -218,9 +220,9 @@ export class Mole {
   /** Notches the two orthogonal neighbors flanking a diagonal step so the boundary between
    *  dirt and tunnel reads as one straight 45 degree line instead of a staircase. */
   _carveDiagonalElbows(fromCol, fromRow, dx, dy) {
-    const [cornerA, cornerB] = DIAGONAL_ELBOW_CORNERS[`${dx},${dy}`];
-    this.map.cutCorner(fromCol + dx, fromRow, cornerA);
-    this.map.cutCorner(fromCol, fromRow + dy, cornerB);
+    const [shapeA, shapeB] = DIAGONAL_ELBOW_SHAPES[`${dx},${dy}`];
+    this.map.carveDiagonal(fromCol + dx, fromRow, shapeA);
+    this.map.carveDiagonal(fromCol, fromRow + dy, shapeB);
   }
 
   _applyFood(typeKey) {

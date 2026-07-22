@@ -611,21 +611,59 @@ export class CreatureManager {
   // diagonally shaved by the mole's dig (see tiles.js isEdgeSolid) - a 45 degree ramp instead
   // of a flat tile-high step. wallDx/wallDy/travelDx/travelDy never change here - the ant keeps
   // heading exactly the same direction it already was, no turn at all - only its position dips
-  // an extra tile deeper along the wall axis while covering an extra tile of travel-axis
-  // distance, tracing the ramp's real diagonal line in 3 legs: half a tile flat to the ramp's
-  // start (vertex1), a full diagonal tile across the corner-cut tile itself (vertex1->vertex2,
-  // chained via c._pendingLeg same as a corner's leg 2), then half a tile flat out the far side
-  // onto the next stable cell (chained again via that leg's own .next). Net effect: 2 tiles of
-  // travel-axis progress for 1 tile deeper into the wall axis - matching the mole's own 1-tile
-  // diagonal displacement, which is exactly what carved this shape in the first place.
+  // deeper along the wall axis while covering extra travel-axis distance, tracing the ramp's
+  // real diagonal line: half a tile flat to the ramp's start, then one full diagonal tile per
+  // corner-cut elbow crossed, then half a tile flat out the far side onto the next stable
+  // cell. A single mole dig step leaves exactly one such elbow, but a staircase of several
+  // consecutive diagonal dig steps chains multiple elbows back to back with no flat ground
+  // between them - each diagonal tile lands exactly on the NEXT one's own boundary, not on
+  // real ground, so the loop below keeps extending the glide through every consecutive
+  // diagonal elbow it finds before finally landing where isEdgeSolid says the wall is real.
   _beginAntRamp(c, rampCol, rampRow, interval) {
-    const vertex1X = c.px + c.travelDx * 0.5;
-    const vertex1Y = c.py + c.travelDy * 0.5;
-    const vertex2X = vertex1X + c.travelDx + c.wallDx;
-    const vertex2Y = vertex1Y + c.travelDy + c.wallDy;
-    const newCol = c.col + 2 * c.travelDx + c.wallDx;
-    const newRow = c.row + 2 * c.travelDy + c.wallDy;
-    const newAnchor = _antAnchor(newCol, newRow, c.wallDx, c.wallDy);
+    const { wallDx, wallDy, travelDx, travelDy } = c;
+    const diagonalDx = travelDx + wallDx, diagonalDy = travelDy + wallDy;
+
+    const vertex1X = c.px + travelDx * 0.5;
+    const vertex1Y = c.py + travelDy * 0.5;
+
+    const segments = [];
+    let segX = vertex1X, segY = vertex1Y;
+    let openCol = c.col + travelDx, openRow = c.row + travelDy;
+    let elbowCol = rampCol, elbowRow = rampRow;
+    for (let guard = 0; guard < 40; guard++) {
+      const toX = segX + diagonalDx, toY = segY + diagonalDy;
+      segments.push({ toX, toY, wallCol: elbowCol, wallRow: elbowRow });
+      segX = toX; segY = toY;
+      openCol += diagonalDx; openRow += diagonalDy;
+      const nextElbowCol = openCol + wallDx, nextElbowRow = openRow + wallDy;
+      elbowCol = nextElbowCol; elbowRow = nextElbowRow;
+      if (this.map.isEdgeSolid(nextElbowCol, nextElbowRow, wallDx, wallDy)) break;
+    }
+
+    const newCol = openCol, newRow = openRow;
+    const newAnchor = _antAnchor(newCol, newRow, wallDx, wallDy);
+
+    // Build the leg chain back-to-front: the final flat landing leg, then each diagonal
+    // segment prepended in reverse, all sharing the same cosmetic diagonal render angle.
+    let nextLeg = {
+      wallDx, wallDy, travelDx, travelDy,
+      toX: newAnchor.x, toY: newAnchor.y, duration: interval * 0.5,
+      wallCol: elbowCol, wallRow: elbowRow,
+      diagonalDx: null, diagonalDy: null, next: null,
+    };
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const seg = segments[i];
+      nextLeg = {
+        wallDx, wallDy, travelDx, travelDy,
+        toX: seg.toX, toY: seg.toY, duration: interval * Math.SQRT2,
+        wallCol: seg.wallCol, wallRow: seg.wallRow,
+        // The true 45 degree angle of the ramp itself (travel and wall are always perpendicular
+        // unit vectors, so their sum is a valid diagonal) - purely cosmetic, used instead of the
+        // normal wallAngle only for diagonal legs' rotation (see drawCreature/_antRenderAngle).
+        diagonalDx, diagonalDy,
+        next: nextLeg,
+      };
+    }
 
     c._fromX = c.px; c._fromY = c.py;
     c._toX = vertex1X; c._toY = vertex1Y;
@@ -635,21 +673,7 @@ export class CreatureManager {
     c._waitTimer = 0;
     c._pendingCol = newCol;
     c._pendingRow = newRow;
-    c._pendingLeg = {
-      wallDx: c.wallDx, wallDy: c.wallDy, travelDx: c.travelDx, travelDy: c.travelDy,
-      toX: vertex2X, toY: vertex2Y, duration: interval * Math.SQRT2,
-      wallCol: rampCol, wallRow: rampRow,
-      // The true 45 degree angle of the ramp itself (travel and wall are always perpendicular
-      // unit vectors, so their sum is a valid diagonal) - purely cosmetic, used instead of the
-      // normal wallAngle only for this middle leg's rotation (see drawCreature/_antRenderAngle).
-      diagonalDx: c.travelDx + c.wallDx, diagonalDy: c.travelDy + c.wallDy,
-      next: {
-        wallDx: c.wallDx, wallDy: c.wallDy, travelDx: c.travelDx, travelDy: c.travelDy,
-        toX: newAnchor.x, toY: newAnchor.y, duration: interval * 0.5,
-        wallCol: newCol + c.wallDx, wallRow: newRow + c.wallDy,
-        diagonalDx: null, diagonalDy: null, next: null,
-      },
-    };
+    c._pendingLeg = nextLeg;
   }
 
   // Starts the next leg of a corner or ramp once the previous one (to its vertex) finishes -
