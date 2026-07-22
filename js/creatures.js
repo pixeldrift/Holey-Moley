@@ -76,6 +76,8 @@ class Creature {
       this._angleTo = 0;
       this._rotElapsed = 0;
       this._rotDuration = 1;
+      this._pendingMove = null;
+      this._pendingWallTurn = null;
     }
   }
 }
@@ -176,6 +178,7 @@ export class CreatureManager {
         c.px = c.col;
         c.py = c.row;
         c.isBusy = false;
+        if (c.type === "ANT") this._resolveAntPending(c);
       }
       return;
     }
@@ -390,11 +393,10 @@ export class CreatureManager {
       }
       // Commit to the hole: curl down into it - the direction it was walking becomes the new
       // "down," and the wall it clings to is now behind it, on the side it approached from.
+      // The landing cell (nc, row+1) is only solid-adjacent via the NEW wall (the floor it's
+      // leaving), not the old one, so this is a convex-style turn (see _beginAntConvexTurn).
       const newWallDx = -c.travelDx, newWallDy = 0;
-      _setAntWall(c, newWallDx, newWallDy, false);
-      c.travelDx = 0;
-      c.travelDy = 1;
-      this._beginStep(c, nc, c.row + 1, stats.moveIntervalMs);
+      this._beginAntConvexTurn(c, newWallDx, newWallDy, 0, 1, nc, c.row + 1, stats.moveIntervalMs);
       return;
     }
 
@@ -406,7 +408,9 @@ export class CreatureManager {
   // straight afterward, and following it is a genuine decision the ant might turn back from -
   // or one tile of a staircase, where the very next tile is already another corner. Staircases
   // are walked through at a continuous 45-degree lean with no chance to turn back, exactly
-  // like a classic single-tile-tread/riser slope.
+  // like a classic single-tile-tread/riser slope - so only real (non-staircase) corners get
+  // the two-phase pivot/glide split below; staircase tiles keep the original simultaneous
+  // rotate-and-glide, which is what makes the lean read as one continuous downhill slide.
   _stepAntTunnel(c) {
     const map = this.map;
     const stats = CREATURE_STATS.ANT;
@@ -415,9 +419,9 @@ export class CreatureManager {
     const aheadX = c.col + c.travelDx, aheadY = c.row + c.travelDy;
 
     if (isSolid(aheadX, aheadY)) {
-      // Concave corner: the wall turns to block the path ahead. Reorienting and advancing
-      // into the inside corner happen together, in one glide, rather than pausing in place
-      // first - a staircase needs that to read as continuous, not stop-and-go.
+      // Concave (inside) corner: the wall turns to block the path ahead. The ant's CURRENT
+      // cell is solid-adjacent via BOTH the old wall and the new one (that's what makes it
+      // concave), so it can pivot in place there before moving - see _beginAntConcaveTurn.
       const newWallDx = c.travelDx, newWallDy = c.travelDy;
       const newTravelDx = -c.wallDx, newTravelDy = -c.wallDy;
       const staircase = _isImmediateCorner(map, c.col, c.row, newWallDx, newWallDy, newTravelDx, newTravelDy);
@@ -429,16 +433,22 @@ export class CreatureManager {
         return;
       }
 
-      _setAntWall(c, newWallDx, newWallDy, staircase);
-      c.travelDx = newTravelDx;
-      c.travelDy = newTravelDy;
-      this._beginStep(c, c.col + newTravelDx, c.row + newTravelDy, stats.moveIntervalMs);
+      if (staircase) {
+        _setAntWall(c, newWallDx, newWallDy, true);
+        c.travelDx = newTravelDx;
+        c.travelDy = newTravelDy;
+        this._beginStep(c, c.col + newTravelDx, c.row + newTravelDy, stats.moveIntervalMs);
+      } else {
+        this._beginAntConcaveTurn(c, newWallDx, newWallDy, newTravelDx, newTravelDy, c.col + newTravelDx, c.row + newTravelDy, stats.moveIntervalMs);
+      }
       return;
     }
 
     const wallAheadX = aheadX + c.wallDx, wallAheadY = aheadY + c.wallDy;
     if (!isSolid(wallAheadX, wallAheadY)) {
-      // Convex corner: the wall it was hugging drops away at an edge.
+      // Convex (outside) corner: the wall it was hugging drops away at an edge. The landing
+      // cell is diagonal and only solid-adjacent via the NEW wall, not the old one - see
+      // _beginAntConvexTurn.
       const newWallDx = -c.travelDx, newWallDy = -c.travelDy;
       const newTravelDx = c.wallDx, newTravelDy = c.wallDy;
       const staircase = _isImmediateCorner(map, wallAheadX, wallAheadY, newWallDx, newWallDy, newTravelDx, newTravelDy);
@@ -450,15 +460,72 @@ export class CreatureManager {
         return;
       }
 
-      _setAntWall(c, newWallDx, newWallDy, staircase);
-      c.travelDx = newTravelDx;
-      c.travelDy = newTravelDy;
-      this._beginStep(c, wallAheadX, wallAheadY, stats.moveIntervalMs);
+      if (staircase) {
+        _setAntWall(c, newWallDx, newWallDy, true);
+        c.travelDx = newTravelDx;
+        c.travelDy = newTravelDy;
+        this._beginStep(c, wallAheadX, wallAheadY, stats.moveIntervalMs);
+      } else {
+        this._beginAntConvexTurn(c, newWallDx, newWallDy, newTravelDx, newTravelDy, wallAheadX, wallAheadY, stats.moveIntervalMs);
+      }
       return;
     }
 
     // Flat stretch of wall - keep walking.
     this._beginStep(c, aheadX, aheadY, stats.moveIntervalMs);
+  }
+
+  // Rotate in place (no position change) at the ant's current cell, which is already
+  // solid-adjacent via both the old and new wall, then glide once fully turned. Splitting
+  // these into two phases - instead of rotating and translating at once - keeps the sprite's
+  // feet planted on real solid ground for the whole transition, rather than swinging through
+  // open air with a half-turned angle partway through a single glide.
+  _beginAntConcaveTurn(c, newWallDx, newWallDy, newTravelDx, newTravelDy, toCol, toRow, interval) {
+    _setAntWall(c, newWallDx, newWallDy, false);
+    c._rotDuration = interval * 0.5;
+    c.travelDx = newTravelDx;
+    c.travelDy = newTravelDy;
+    c._fromCol = c.col; c._fromRow = c.row;
+    c._toCol = c.col; c._toRow = c.row;
+    c._elapsed = 0;
+    c._duration = c._rotDuration;
+    c.isBusy = true;
+    c._waitTimer = 0;
+    c._pendingMove = { col: toCol, row: toRow, interval };
+  }
+
+  // The destination cell for an outside corner is only solid-adjacent via the NEW wall, not
+  // the old one - so unlike the concave case, there's no single cell valid for both
+  // orientations to pivot at. Instead: glide across first with the OLD orientation held fixed
+  // (no rotation happening mid-air over the gap), then pivot in place once safely landed on
+  // ground that's actually solid for the new wall.
+  _beginAntConvexTurn(c, newWallDx, newWallDy, newTravelDx, newTravelDy, toCol, toRow, interval) {
+    this._beginStep(c, toCol, toRow, interval);
+    c._pendingWallTurn = { wallDx: newWallDx, wallDy: newWallDy, travelDx: newTravelDx, travelDy: newTravelDy };
+  }
+
+  // Called once a busy ant glide/pivot finishes - chains into whichever second phase (if any)
+  // _beginAntConcaveTurn/_beginAntConvexTurn queued up, so the whole turn plays out over
+  // consecutive frames without an extra decision-making pass in between.
+  _resolveAntPending(c) {
+    if (c._pendingMove) {
+      const { col, row, interval } = c._pendingMove;
+      c._pendingMove = null;
+      this._beginStep(c, col, row, interval);
+    } else if (c._pendingWallTurn) {
+      const { wallDx, wallDy, travelDx, travelDy } = c._pendingWallTurn;
+      c._pendingWallTurn = null;
+      _setAntWall(c, wallDx, wallDy, false);
+      c._rotDuration = CREATURE_STATS.ANT.moveIntervalMs * 0.5;
+      c.travelDx = travelDx;
+      c.travelDy = travelDy;
+      c._fromCol = c.col; c._fromRow = c.row;
+      c._toCol = c.col; c._toRow = c.row;
+      c._elapsed = 0;
+      c._duration = c._rotDuration;
+      c.isBusy = true;
+      c._waitTimer = 0;
+    }
   }
 
   /** Call after ant step animations complete to resolve any pending bite. */

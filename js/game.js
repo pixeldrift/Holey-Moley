@@ -127,10 +127,18 @@ export class Game {
     this.viewH = h;
   }
 
+  // input.js compares this against pointer events' clientX/clientY, which are relative to the
+  // whole page/viewport - not the canvas element. That used to be the same thing when the
+  // canvas filled the entire viewport, but now the HUD bar pushes it down, so the canvas's own
+  // offset has to be added back in to land in the same coordinate space.
   _moleScreenPos() {
     const wx = this.mole.px * TILE_SIZE + TILE_SIZE / 2;
     const wy = this.mole.py * TILE_SIZE + TILE_SIZE / 2;
-    return { x: wx - this.camera.x + this.viewW / 2, y: wy - this.camera.y + this.viewH / 2 };
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: wx - this.camera.x + this.viewW / 2 + rect.left,
+      y: wy - this.camera.y + this.viewH / 2 + rect.top,
+    };
   }
 
   _loop(now) {
@@ -143,6 +151,11 @@ export class Game {
       this.creatures.update(dt, this.mole);
       this._updateCamera(dt);
       this.hud.setDepth(Math.round(this.mole.row - this.map.surfaceRow));
+    } else {
+      // Not playing yet (menu/paused) - the camera still needs to respect the same clamp so
+      // the start screen doesn't show a camera.y left at its raw unclamped initial value,
+      // which would leave half the viewport showing empty sky instead of the ground/veggies.
+      this._clampCamera();
     }
 
     this._render(now);
