@@ -80,6 +80,11 @@ class Creature {
       this._pendingLeg = null;
       this._pendingCol = col;
       this._pendingRow = row;
+      // The exact cell an ant is currently clinging to - tracked as plain integer state,
+      // updated only at well-defined moments (a leg starting), never re-derived from the
+      // continuous (px,py) position. See _updateAnt for why that matters.
+      this._wallCol = col + this.wallDx;
+      this._wallRow = row + this.wallDy;
       // True whenever the surface an ant was clinging to has been dug out from under it - it
       // drops straight down (see _beginAntFall/_tickAntFall) until it lands on solid ground
       // again, rather than continuing to "walk" along ground that no longer exists.
@@ -96,6 +101,7 @@ const ANT_SPAWN_EXCLUSION = 7; // tiles from the mole's start column ants won't 
 const ANT_SURFACE_TURN_CHANCE = 0.1; // ~1-in-10 chance per tile to turn back while on open ground
 const ANT_CORNER_TURN_CHANCE = 0.25; // chance to turn back instead of following a real corner
 const ANT_OFFSCREEN_MARGIN = 10; // tiles beyond the mole's column considered safely offscreen
+const ANT_FALL_SPEED_MULTIPLIER = 2.5; // falling drops faster than the normal walking pace
 const WORM_TURN_CHANCE = 0.25; // chance per move to turn instead of continuing straight
 
 export class CreatureManager {
@@ -197,18 +203,21 @@ export class CreatureManager {
   }
 
   // Ants are never allowed to float: every frame (mid-glide or not, whatever it's doing)
-  // checks whether the tile it's actually clinging to is still solid, since the mole can dig
-  // it away out from under an ant at any moment. The instant it isn't, the ant drops into
-  // freefall from exactly where it is - not just at decision points - so it never keeps
-  // "walking" across ground that no longer exists.
+  // checks whether the tile it's actually clinging to (c._wallCol/_wallRow - exact integer
+  // state, not re-derived from position, see the constructor and _beginAntStraight/
+  // _beginAntLeg) is still solid, since the mole can dig it away out from under an ant at any
+  // moment. The instant it isn't, the ant drops into freefall from exactly where it is - not
+  // just at decision points - so it never keeps "walking" across ground that no longer exists.
+  // Only a REAL loss of support triggers this: a corner just switches which exact cell is
+  // being tracked, at the same instant its wallDx/wallDy change, so a normal corner (nothing
+  // dug away) never has a moment where that cell is anything other than solid ground.
   _updateAnt(c, dt, mole, onMoleHurt) {
     if (c.falling) {
       this._tickAntFall(c, dt);
       return;
     }
 
-    const wallCell = this._antWallCell(c);
-    if (!this.map.getTile(wallCell.x, wallCell.y).solid) {
+    if (!this.map.getTile(c._wallCol, c._wallRow).solid) {
       this._beginAntFall(c);
       return;
     }
@@ -239,16 +248,6 @@ export class CreatureManager {
     this._stepAnt(c, mole, onMoleHurt);
   }
 
-  // The open/wall cells an ant's CURRENT position actually corresponds to, derived from its
-  // continuous (px,py) and wallDx/wallDy rather than the possibly-stale c.col/c.row (which -
-  // like every other creature type - only updates once a full step/leg lands, not mid-glide).
-  // Inverse of _antAnchor.
-  _antWallCell(c) {
-    const openCol = Math.round(c.px - 0.5 - c.wallDx * 0.5);
-    const openRow = Math.round(c.py - 0.5 - c.wallDy * 0.5);
-    return { x: openCol + c.wallDx, y: openRow + c.wallDy };
-  }
-
   // The mole dug away whatever this ant was clinging to - drop it into freefall from exactly
   // where it is right now (including mid-glide), snapped to fall straight down through the
   // center of whichever column it's currently over.
@@ -267,7 +266,8 @@ export class CreatureManager {
 
   _tickAntFall(c, dt) {
     const stats = CREATURE_STATS.ANT;
-    c.py += (dt / stats.moveIntervalMs);
+    // Falling is gravity, not a stroll - noticeably faster than the walking pace.
+    c.py += (dt / stats.moveIntervalMs) * ANT_FALL_SPEED_MULTIPLIER;
     c.row = Math.floor(c.py);
     if (this.map.getTile(c.col, c.row).solid) {
       // Landed - clinging to the floor of whatever it fell onto, right where its feet first
@@ -278,6 +278,8 @@ export class CreatureManager {
       c.travelDx = c.facing || 1;
       c.travelDy = 0;
       c.row -= 1;
+      c._wallCol = c.col;
+      c._wallRow = c.row + 1;
       c._waitTimer = 0;
     }
   }
@@ -532,7 +534,10 @@ export class CreatureManager {
   }
 
   // A plain straight glide: same wall, same rotation, just moves to the next cell's own
-  // anchor point (the spot on that cell's wall-line where its feet touch).
+  // anchor point (the spot on that cell's wall-line where its feet touch). The destination's
+  // wall-cell is already known solid (whatever called this just checked it), so _wallCol/Row
+  // update to it immediately rather than waiting for arrival - that's what lets a dig ahead of
+  // the ant mid-glide be noticed right away instead of only at the next decision point.
   _beginAntStraight(c, toCol, toRow, interval) {
     const anchor = _antAnchor(toCol, toRow, c.wallDx, c.wallDy);
     c._fromX = c.px; c._fromY = c.py;
@@ -544,6 +549,8 @@ export class CreatureManager {
     c._pendingCol = toCol;
     c._pendingRow = toRow;
     c._pendingLeg = null;
+    c._wallCol = toCol + c.wallDx;
+    c._wallRow = toRow + c.wallDy;
   }
 
   // Every corner - concave or convex, tunnel or surface-to-hole - reduces to the same two-leg
@@ -554,6 +561,11 @@ export class CreatureManager {
   // whichever leg it's currently on. Both legs are always exactly half a tile, so a full corner
   // takes exactly as long as a straight tile - no special-casing needed for which kind of
   // corner this is; the vertex/next-cell math is identical either way.
+  //
+  // c._wallCol/_wallRow is deliberately left untouched here: leg 1 keeps the OLD wall (that
+  // cell was already valid when this corner was chosen), so the tile being watched for a dig
+  // doesn't change until leg 2 actually starts (see _beginAntLeg) - there's never a frame where
+  // it's derived from an in-between position that doesn't correspond to a real solid cell.
   _beginAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, interval) {
     const vertexX = c.px + c.travelDx * 0.5;
     const vertexY = c.py + c.travelDy * 0.5;
@@ -572,16 +584,21 @@ export class CreatureManager {
     c._pendingLeg = {
       wallDx: newWallDx, wallDy: newWallDy, travelDx: newTravelDx, travelDy: newTravelDy,
       toX: newAnchor.x, toY: newAnchor.y, duration: interval * 0.5,
+      wallCol: newCol + newWallDx, wallRow: newRow + newWallDy,
     };
   }
 
   // Starts the second leg of a corner once the first (to the vertex) finishes - rotation snaps
-  // to the new wall right here, with no glide/pivot animation of its own.
+  // to the new wall right here, with no glide/pivot animation of its own. _wallCol/_wallRow
+  // switch to the new wall at this exact instant too, in lockstep with wallDx/wallDy - both
+  // precomputed integers from _beginAntCorner, never re-derived from a mid-glide position.
   _beginAntLeg(c, leg) {
     c.wallDx = leg.wallDx;
     c.wallDy = leg.wallDy;
     c.travelDx = leg.travelDx;
     c.travelDy = leg.travelDy;
+    c._wallCol = leg.wallCol;
+    c._wallRow = leg.wallRow;
     c._fromX = c.px; c._fromY = c.py;
     c._toX = leg.toX; c._toY = leg.toY;
     c._elapsed = 0;
