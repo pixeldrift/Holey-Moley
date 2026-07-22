@@ -80,6 +80,10 @@ class Creature {
       this._pendingLeg = null;
       this._pendingCol = col;
       this._pendingRow = row;
+      // True whenever the surface an ant was clinging to has been dug out from under it - it
+      // drops straight down (see _beginAntFall/_tickAntFall) until it lands on solid ground
+      // again, rather than continuing to "walk" along ground that no longer exists.
+      this.falling = false;
     }
   }
 }
@@ -167,6 +171,11 @@ export class CreatureManager {
       return;
     }
 
+    if (c.type === "ANT") {
+      this._updateAnt(c, dt, mole, onMoleHurt);
+      return;
+    }
+
     if (c.isBusy) {
       c._elapsed += dt;
       const t = Math.min(1, c._elapsed / c._duration);
@@ -175,19 +184,8 @@ export class CreatureManager {
       if (t >= 1) {
         c.px = c._toX;
         c.py = c._toY;
-        if (c.type === "ANT") {
-          if (c._pendingLeg) {
-            const leg = c._pendingLeg;
-            c._pendingLeg = null;
-            this._beginAntLeg(c, leg);
-            return;
-          }
-          c.col = c._pendingCol;
-          c.row = c._pendingRow;
-        } else {
-          c.col = c._toX;
-          c.row = c._toY;
-        }
+        c.col = c._toX;
+        c.row = c._toY;
         c.isBusy = false;
       }
       return;
@@ -195,11 +193,92 @@ export class CreatureManager {
 
     c._waitTimer -= dt;
     if (c._waitTimer > 0) return;
+    this._stepSurfaceBug(c, mole);
+  }
 
-    if (c.type === "ANT") {
-      this._stepAnt(c, mole, onMoleHurt);
-    } else {
-      this._stepSurfaceBug(c, mole);
+  // Ants are never allowed to float: every frame (mid-glide or not, whatever it's doing)
+  // checks whether the tile it's actually clinging to is still solid, since the mole can dig
+  // it away out from under an ant at any moment. The instant it isn't, the ant drops into
+  // freefall from exactly where it is - not just at decision points - so it never keeps
+  // "walking" across ground that no longer exists.
+  _updateAnt(c, dt, mole, onMoleHurt) {
+    if (c.falling) {
+      this._tickAntFall(c, dt);
+      return;
+    }
+
+    const wallCell = this._antWallCell(c);
+    if (!this.map.getTile(wallCell.x, wallCell.y).solid) {
+      this._beginAntFall(c);
+      return;
+    }
+
+    if (c.isBusy) {
+      c._elapsed += dt;
+      const t = Math.min(1, c._elapsed / c._duration);
+      c.px = lerp(c._fromX, c._toX, t);
+      c.py = lerp(c._fromY, c._toY, t);
+      if (t >= 1) {
+        c.px = c._toX;
+        c.py = c._toY;
+        if (c._pendingLeg) {
+          const leg = c._pendingLeg;
+          c._pendingLeg = null;
+          this._beginAntLeg(c, leg);
+          return;
+        }
+        c.col = c._pendingCol;
+        c.row = c._pendingRow;
+        c.isBusy = false;
+      }
+      return;
+    }
+
+    c._waitTimer -= dt;
+    if (c._waitTimer > 0) return;
+    this._stepAnt(c, mole, onMoleHurt);
+  }
+
+  // The open/wall cells an ant's CURRENT position actually corresponds to, derived from its
+  // continuous (px,py) and wallDx/wallDy rather than the possibly-stale c.col/c.row (which -
+  // like every other creature type - only updates once a full step/leg lands, not mid-glide).
+  // Inverse of _antAnchor.
+  _antWallCell(c) {
+    const openCol = Math.round(c.px - 0.5 - c.wallDx * 0.5);
+    const openRow = Math.round(c.py - 0.5 - c.wallDy * 0.5);
+    return { x: openCol + c.wallDx, y: openRow + c.wallDy };
+  }
+
+  // The mole dug away whatever this ant was clinging to - drop it into freefall from exactly
+  // where it is right now (including mid-glide), snapped to fall straight down through the
+  // center of whichever column it's currently over.
+  _beginAntFall(c) {
+    c.falling = true;
+    c.isBusy = false;
+    c._pendingLeg = null;
+    c._attacking = false;
+    c.wallDx = 0;
+    c.wallDy = 0;
+    c.travelDx = 0;
+    c.travelDy = 1;
+    c.col = Math.round(c.px - 0.5);
+    c.px = c.col + 0.5;
+  }
+
+  _tickAntFall(c, dt) {
+    const stats = CREATURE_STATS.ANT;
+    c.py += (dt / stats.moveIntervalMs);
+    c.row = Math.floor(c.py);
+    if (this.map.getTile(c.col, c.row).solid) {
+      // Landed - clinging to the floor of whatever it fell onto, right where its feet first
+      // touched it, then free to resume normal wall-following from here.
+      c.falling = false;
+      c.wallDx = 0;
+      c.wallDy = 1;
+      c.travelDx = c.facing || 1;
+      c.travelDy = 0;
+      c.row -= 1;
+      c._waitTimer = 0;
     }
   }
 
@@ -621,7 +700,7 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
     // The sprite's own art faces left natively, opposite of the "unflipped = local right"
     // convention above, so the mirror condition is inverted from the usual flip=1/-1 pattern.
     ctx.scale(facingLocalRight ? -1 : 1, 1);
-    drawAnt(ctx, tileSize, t, c.isBusy);
+    drawAnt(ctx, tileSize, t, c.isBusy || c.falling);
     ctx.restore();
     return;
   }
