@@ -179,10 +179,14 @@ export class Game {
       ? worldW / 2
       : Math.min(Math.max(this.camera.x, halfW), worldW - halfW);
 
+    // The top of the grass row is the world's Y=0 boundary - there's nothing above ground but
+    // flat sky, so the camera never scrolls up past it. The bottom of the world (the rock
+    // floor) is the other bound.
+    const minCameraY = this.map.surfaceRow * TILE_SIZE + halfH;
     const maxCameraY = worldH - halfH;
-    if (maxCameraY > 0) {
-      this.camera.y = Math.min(this.camera.y, maxCameraY);
-    }
+    this.camera.y = maxCameraY > minCameraY
+      ? Math.min(Math.max(this.camera.y, minCameraY), maxCameraY)
+      : (minCameraY + maxCameraY) / 2;
   }
 
   _render(now) {
