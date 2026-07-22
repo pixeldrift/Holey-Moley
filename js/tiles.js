@@ -229,6 +229,7 @@ export class TileMap {
 
   _generateSurfaceFeatures(rng) {
     let col = 2;
+    const treeCols = [];
     while (col < this.width - 2) {
       col += 6 + Math.floor(rng() * 10);
       if (col >= this.width - 2) break;
@@ -239,12 +240,34 @@ export class TileMap {
         const size = sizeRoll < 0.5 ? "small" : sizeRoll < 0.85 ? "medium" : "large";
         this.surfaceFeatures[col] = { type: "tree", size };
         this._growTreeRoots(col, size, rng);
+        treeCols.push(col);
       } else if (roll < 0.55) {
         this.surfaceFeatures[col] = { type: "bush" };
       } else if (roll < 0.8) {
         this.surfaceFeatures[col] = { type: "flower" };
       }
     }
+    this._ensureLargeTree(treeCols, rng);
+  }
+
+  // "Large" is only ~15% of the already-uncommon tree rolls, so most maps would otherwise
+  // never grow one - guarantee at least one big stump (and its giant buried root system, see
+  // textures.js drawUndergroundDecorations) per map. Prefer upgrading an existing tree; if the
+  // map rolled no trees at all, plant one clear of the starting burrow.
+  _ensureLargeTree(treeCols, rng) {
+    if (treeCols.some((c) => this.surfaceFeatures[c]?.size === "large")) return;
+    let col;
+    if (treeCols.length) {
+      col = treeCols[Math.floor(rng() * treeCols.length)];
+    } else {
+      const candidates = [];
+      for (let x = 4; x < this.width - 4; x++) {
+        if (Math.abs(x - this.startCol) > 3) candidates.push(x);
+      }
+      col = candidates[Math.floor(rng() * candidates.length)];
+    }
+    this.surfaceFeatures[col] = { type: "tree", size: "large" };
+    this._growTreeRoots(col, "large", rng);
   }
 
   // Bigger trees send down deeper, wider root systems - real diggable ROOT tiles, tougher

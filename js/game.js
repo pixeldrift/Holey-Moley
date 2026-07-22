@@ -143,6 +143,11 @@ export class Game {
       this.creatures.update(dt, this.mole);
       this._updateCamera(dt);
       this.hud.setDepth(Math.round(this.mole.row - this.map.surfaceRow));
+    } else {
+      // Not playing yet (menu/paused) - the camera still needs to respect the same clamp so
+      // the start screen doesn't show a camera.y left at its raw unclamped initial value,
+      // which would leave half the viewport showing empty sky instead of the ground/veggies.
+      this._clampCamera();
     }
 
     this._render(now);
