@@ -68,7 +68,7 @@ class Creature {
     // bottom-center of its sprite - the exact point where its feet touch that wall - not a
     // cell index, so no separate rendering offset is needed. Rotation is never animated: it's
     // always exactly wallAngle(wallDx,wallDy), snapping instantly the moment wallDx/wallDy
-    // change (see _stepAntTunnel/_beginAntCorner).
+    // change (see _stepAntWall/_beginAntCorner).
     if (type === "ANT") {
       this.wallDx = 0;
       this.wallDy = 1;
@@ -465,67 +465,44 @@ export class CreatureManager {
       }
     }
 
-    if (normalFooting && c.row === this.map.surfaceRow) {
-      this._stepAntSurface(c);
-    } else {
-      this._stepAntTunnel(c);
-    }
+    this._stepAntWall(c);
   }
 
-  // Walking the original top-of-world ground: ambles left/right, occasionally changes its
-  // mind at random (~1 in 10 tiles), and on finding a hole in the ground ahead either turns
-  // back or commits to climbing down into it, 50/50.
-  _stepAntSurface(c) {
-    const stats = CREATURE_STATS.ANT;
+  // Generic wall-following - the single decision an ant makes every step, regardless of which
+  // surface (original grass, or the floor/wall/ceiling of a dug tunnel) it's currently clinging
+  // to. On the surface this ALSO handles the classic amble: an ambient chance to reverse for no
+  // reason, and a much bigger chance to turn back rather than commit to a hole, neither of which
+  // has any equivalent underground. Once past those, the geometry is identical either way: a
+  // corner is a real 90-degree bend where the wall it's hugging either blocks the path ahead
+  // (concave - never actually reachable from the surface, since grass is never solid) or drops
+  // away at an edge (convex; on the surface, this IS "found a hole"), handled by
+  // _resolveAntCorner. A third case - the wall keeps going in the exact same direction, but the
+  // mole's diagonal dig shaved the next tile into a 45 degree ramp rather than a flat step - is
+  // handled separately by _beginAntRamp, since no turn happens there at all. A mole dig starting
+  // right at the surface only diagonally shapes the underground elbow (grass itself isn't
+  // diggable, so carveDiagonal no-ops on it), so this is the very first place any ant ever meets
+  // a diagonal dig, since every ant starts on the surface - the ramp check below covers it the
+  // same way it covers every other wall.
+  _stepAntWall(c) {
     const map = this.map;
+    const stats = CREATURE_STATS.ANT;
+    const isSolid = (x, y) => map.getTile(x, y).solid;
+    const onSurface = c.wallDx === 0 && c.wallDy === 1 && c.row === map.surfaceRow;
 
-    if (Math.random() < ANT_SURFACE_TURN_CHANCE) {
+    if (onSurface && Math.random() < ANT_SURFACE_TURN_CHANCE) {
       c.travelDx *= -1;
     }
 
-    const nc = c.col + c.travelDx;
-    if (!map.inBounds(nc, c.row)) {
+    const aheadX = c.col + c.travelDx, aheadY = c.row + c.travelDy;
+
+    // Only the surface can run off the edge of the map - a tunnel never does, since the mole
+    // can't dig past the map's border - so just reverse in place rather than falling through to
+    // the checks below with an out-of-range column.
+    if (onSurface && !map.inBounds(aheadX, aheadY)) {
       c.travelDx *= -1;
       c._waitTimer = stats.moveIntervalMs * 0.4;
       return;
     }
-
-    // A mole dig starting right at the surface only diagonally shapes the underground elbow -
-    // the grass tile itself isn't diggable, so cutCorner/carveDiagonal no-ops on it and the
-    // surface above reads as ordinary intact ground even though the floor just past it ramps
-    // down at 45 degrees instead of ending in a square drop (see tiles.js SHAPE). This is the
-    // very first place any ant ever meets a diagonal dig, since every ant starts on the
-    // surface - so it needs the same ramp check _stepAntTunnel does for its own floor-ahead,
-    // checked BEFORE concluding there's no floor at all.
-    const floorTile = map.getTile(nc, c.row + 1);
-    if (floorTile.solid && !map.isEdgeSolid(nc, c.row + 1, 0, 1)) {
-      this._beginAntRamp(c, nc, c.row + 1, stats.moveIntervalMs);
-      return;
-    }
-
-    if (!map.hasFloorBelow(nc, c.row)) {
-      // Commit to the hole: curl down into it - same shape as any other corner (see
-      // _resolveAntCorner), just starting from the surface instead of a dug tunnel wall.
-      const newWallDx = -c.travelDx, newWallDy = 0;
-      this._resolveAntCorner(c, newWallDx, newWallDy, 0, 1, 0.5, stats.moveIntervalMs);
-      return;
-    }
-
-    this._beginAntStraight(c, nc, c.row, stats.moveIntervalMs);
-  }
-
-  // Generic wall-following, valid regardless of which surface (floor/wall/ceiling) the ant is
-  // currently clinging to. A corner is a real 90-degree bend where the wall it's hugging either
-  // blocks the path ahead (concave) or drops away at an edge (convex) - either way it's handled
-  // by _resolveAntCorner. A third case - the wall keeps going in the exact same direction, but
-  // the mole's diagonal dig shaved the next tile into a 45 degree ramp rather than a flat step
-  // - is handled separately by _beginAntRamp, since no turn happens there at all.
-  _stepAntTunnel(c) {
-    const map = this.map;
-    const stats = CREATURE_STATS.ANT;
-    const isSolid = (x, y) => map.getTile(x, y).solid;
-
-    const aheadX = c.col + c.travelDx, aheadY = c.row + c.travelDy;
 
     if (isSolid(aheadX, aheadY)) {
       // Concave (inside) corner: a wall blocks the path ahead - turn to follow it.
@@ -537,10 +514,13 @@ export class CreatureManager {
 
     const wallAheadX = aheadX + c.wallDx, wallAheadY = aheadY + c.wallDy;
     if (!isSolid(wallAheadX, wallAheadY)) {
-      // Convex (outside) corner: the wall it was hugging drops away at an edge - wrap around it.
+      // Convex (outside) corner: the wall it was hugging drops away at an edge - wrap around it
+      // (on the surface, this is committing down into a hole). Falling into an actual hole is a
+      // bigger commitment than turning a tunnel corner, so it gets a much higher turn-back chance.
       const newWallDx = -c.travelDx, newWallDy = -c.travelDy;
       const newTravelDx = c.wallDx, newTravelDy = c.wallDy;
-      this._resolveAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, ANT_CORNER_TURN_CHANCE, stats.moveIntervalMs);
+      const turnBackChance = onSurface ? 0.5 : ANT_CORNER_TURN_CHANCE;
+      this._resolveAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, turnBackChance, stats.moveIntervalMs);
       return;
     }
 
