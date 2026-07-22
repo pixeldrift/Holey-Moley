@@ -36,10 +36,10 @@ class Creature {
     this.isBusy = false;
     this._elapsed = 0;
     this._duration = CREATURE_STATS[type].moveIntervalMs; // overwritten by the first real step
-    this._fromCol = col;
-    this._fromRow = row;
-    this._toCol = col;
-    this._toRow = row;
+    this._fromX = col;
+    this._fromY = row;
+    this._toX = col;
+    this._toY = row;
     this._waitTimer = randomBetween(0, CREATURE_STATS[type].moveIntervalMs);
 
     // Worms move in full half-tile increments, snapping directly from one position to the
@@ -64,20 +64,22 @@ class Creature {
     // Ants cling to whatever surface they're walking on rather than always walking
     // horizontally on a floor. wallD{x,y} is the unit vector from the ant to the solid
     // neighbor it's standing on (0,1 = normal floor); travelD{x,y} is perpendicular to that,
-    // the direction it's currently walking along that surface. angleFrom/angleTo/rotElapsed/
-    // rotDuration drive a smooth rotation animation whenever wallD{x,y} changes, instead of
-    // popping straight to the new orientation (see _currentAntAngle).
+    // the direction it's currently walking along that surface. Its position (px,py) is the
+    // bottom-center of its sprite - the exact point where its feet touch that wall - not a
+    // cell index, so no separate rendering offset is needed. Rotation is never animated: it's
+    // always exactly wallAngle(wallDx,wallDy), snapping instantly the moment wallDx/wallDy
+    // change (see _stepAntTunnel/_beginAntCorner).
     if (type === "ANT") {
       this.wallDx = 0;
       this.wallDy = 1;
       this.travelDx = this.facing;
       this.travelDy = 0;
-      this._angleFrom = 0;
-      this._angleTo = 0;
-      this._rotElapsed = 0;
-      this._rotDuration = 1;
-      this._pendingMove = null;
-      this._pendingWallTurn = null;
+      const anchor = _antAnchor(col, row, this.wallDx, this.wallDy);
+      this.px = anchor.x;
+      this.py = anchor.y;
+      this._pendingLeg = null;
+      this._pendingCol = col;
+      this._pendingRow = row;
     }
   }
 }
@@ -160,8 +162,6 @@ export class CreatureManager {
   }
 
   _updateCreature(c, dt, mole, onMoleHurt) {
-    if (c.type === "ANT") c._rotElapsed += dt;
-
     if (c.type === "WORM") {
       this._tickWorm(c, dt);
       return;
@@ -170,15 +170,25 @@ export class CreatureManager {
     if (c.isBusy) {
       c._elapsed += dt;
       const t = Math.min(1, c._elapsed / c._duration);
-      c.px = lerp(c._fromCol, c._toCol, t);
-      c.py = lerp(c._fromRow, c._toRow, t);
+      c.px = lerp(c._fromX, c._toX, t);
+      c.py = lerp(c._fromY, c._toY, t);
       if (t >= 1) {
-        c.col = c._toCol;
-        c.row = c._toRow;
-        c.px = c.col;
-        c.py = c.row;
+        c.px = c._toX;
+        c.py = c._toY;
+        if (c.type === "ANT") {
+          if (c._pendingLeg) {
+            const leg = c._pendingLeg;
+            c._pendingLeg = null;
+            this._beginAntLeg(c, leg);
+            return;
+          }
+          c.col = c._pendingCol;
+          c.row = c._pendingRow;
+        } else {
+          c.col = c._toX;
+          c.row = c._toY;
+        }
         c.isBusy = false;
-        if (c.type === "ANT") this._resolveAntPending(c);
       }
       return;
     }
@@ -200,10 +210,10 @@ export class CreatureManager {
   // through the boundary at constant speed instead of gliding, stopping, then gliding again.
   _beginStep(c, toCol, toRow, interval) {
     c.facing = toCol > c.col ? 1 : toCol < c.col ? -1 : c.facing;
-    c._fromCol = c.col;
-    c._fromRow = c.row;
-    c._toCol = toCol;
-    c._toRow = toRow;
+    c._fromX = c.px;
+    c._fromY = c.py;
+    c._toX = toCol;
+    c._toY = toRow;
     c._elapsed = 0;
     c._duration = interval;
     c.isBusy = true;
@@ -346,16 +356,13 @@ export class CreatureManager {
       const nr = c.row;
       if (nc === mole.col && nr === mole.row) {
         c.travelDx = dir;
-        c._fromCol = c.col; c._fromRow = c.row;
-        c._toCol = nc; c._toRow = nr;
-        c._elapsed = 0; c._duration = stats.chaseIntervalMs; c.isBusy = true;
-        c._waitTimer = 0;
+        this._beginAntStraight(c, nc, nr, stats.chaseIntervalMs);
         c._attacking = true;
         return;
       }
       if (this._canWalkFloor(nc, nr)) {
         c.travelDx = dir;
-        this._beginStep(c, nc, nr, stats.chaseIntervalMs);
+        this._beginAntStraight(c, nc, nr, stats.chaseIntervalMs);
         return;
       }
     }
@@ -391,26 +398,20 @@ export class CreatureManager {
         c._waitTimer = stats.moveIntervalMs * 0.4;
         return;
       }
-      // Commit to the hole: curl down into it - the direction it was walking becomes the new
-      // "down," and the wall it clings to is now behind it, on the side it approached from.
-      // The landing cell (nc, row+1) is only solid-adjacent via the NEW wall (the floor it's
-      // leaving), not the old one, so this is a convex-style turn (see _beginAntConvexTurn).
+      // Commit to the hole: curl down into it - same shape as any other corner (see
+      // _beginAntCorner), just starting from the surface instead of a dug tunnel wall.
       const newWallDx = -c.travelDx, newWallDy = 0;
-      this._beginAntConvexTurn(c, newWallDx, newWallDy, 0, 1, nc, c.row + 1, stats.moveIntervalMs);
+      this._beginAntCorner(c, newWallDx, newWallDy, 0, 1, stats.moveIntervalMs);
       return;
     }
 
-    this._beginStep(c, nc, c.row, stats.moveIntervalMs);
+    this._beginAntStraight(c, nc, c.row, stats.moveIntervalMs);
   }
 
   // Generic wall-following, valid regardless of which surface (floor/wall/ceiling) the ant is
-  // currently clinging to. A corner is either a real 90-degree bend - the wall keeps going
-  // straight afterward, and following it is a genuine decision the ant might turn back from -
-  // or one tile of a staircase, where the very next tile is already another corner. Staircases
-  // are walked through at a continuous 45-degree lean with no chance to turn back, exactly
-  // like a classic single-tile-tread/riser slope - so only real (non-staircase) corners get
-  // the two-phase pivot/glide split below; staircase tiles keep the original simultaneous
-  // rotate-and-glide, which is what makes the lean read as one continuous downhill slide.
+  // currently clinging to. A corner is a real 90-degree bend where the wall it's hugging either
+  // blocks the path ahead (concave) or drops away at an edge (convex) - either way it's the
+  // exact same move: see _beginAntCorner, which rotates instantly and never floats.
   _stepAntTunnel(c) {
     const map = this.map;
     const stats = CREATURE_STATS.ANT;
@@ -419,113 +420,95 @@ export class CreatureManager {
     const aheadX = c.col + c.travelDx, aheadY = c.row + c.travelDy;
 
     if (isSolid(aheadX, aheadY)) {
-      // Concave (inside) corner: the wall turns to block the path ahead. The ant's CURRENT
-      // cell is solid-adjacent via BOTH the old wall and the new one (that's what makes it
-      // concave), so it can pivot in place there before moving - see _beginAntConcaveTurn.
+      // Concave (inside) corner: a wall blocks the path ahead - turn to follow it.
       const newWallDx = c.travelDx, newWallDy = c.travelDy;
       const newTravelDx = -c.wallDx, newTravelDy = -c.wallDy;
-      const staircase = _isImmediateCorner(map, c.col, c.row, newWallDx, newWallDy, newTravelDx, newTravelDy);
-
-      if (!staircase && Math.random() < ANT_CORNER_TURN_CHANCE) {
+      if (Math.random() < ANT_CORNER_TURN_CHANCE) {
         c.travelDx *= -1;
         c.travelDy *= -1;
         c._waitTimer = stats.moveIntervalMs * 0.4;
         return;
       }
-
-      if (staircase) {
-        _setAntWall(c, newWallDx, newWallDy, true);
-        c.travelDx = newTravelDx;
-        c.travelDy = newTravelDy;
-        this._beginStep(c, c.col + newTravelDx, c.row + newTravelDy, stats.moveIntervalMs);
-      } else {
-        this._beginAntConcaveTurn(c, newWallDx, newWallDy, newTravelDx, newTravelDy, c.col + newTravelDx, c.row + newTravelDy, stats.moveIntervalMs);
-      }
+      this._beginAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, stats.moveIntervalMs);
       return;
     }
 
     const wallAheadX = aheadX + c.wallDx, wallAheadY = aheadY + c.wallDy;
     if (!isSolid(wallAheadX, wallAheadY)) {
-      // Convex (outside) corner: the wall it was hugging drops away at an edge. The landing
-      // cell is diagonal and only solid-adjacent via the NEW wall, not the old one - see
-      // _beginAntConvexTurn.
+      // Convex (outside) corner: the wall it was hugging drops away at an edge - wrap around it.
       const newWallDx = -c.travelDx, newWallDy = -c.travelDy;
       const newTravelDx = c.wallDx, newTravelDy = c.wallDy;
-      const staircase = _isImmediateCorner(map, wallAheadX, wallAheadY, newWallDx, newWallDy, newTravelDx, newTravelDy);
-
-      if (!staircase && Math.random() < ANT_CORNER_TURN_CHANCE) {
+      if (Math.random() < ANT_CORNER_TURN_CHANCE) {
         c.travelDx *= -1;
         c.travelDy *= -1;
         c._waitTimer = stats.moveIntervalMs * 0.4;
         return;
       }
-
-      if (staircase) {
-        _setAntWall(c, newWallDx, newWallDy, true);
-        c.travelDx = newTravelDx;
-        c.travelDy = newTravelDy;
-        this._beginStep(c, wallAheadX, wallAheadY, stats.moveIntervalMs);
-      } else {
-        this._beginAntConvexTurn(c, newWallDx, newWallDy, newTravelDx, newTravelDy, wallAheadX, wallAheadY, stats.moveIntervalMs);
-      }
+      this._beginAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, stats.moveIntervalMs);
       return;
     }
 
     // Flat stretch of wall - keep walking.
-    this._beginStep(c, aheadX, aheadY, stats.moveIntervalMs);
+    this._beginAntStraight(c, aheadX, aheadY, stats.moveIntervalMs);
   }
 
-  // Rotate in place (no position change) at the ant's current cell, which is already
-  // solid-adjacent via both the old and new wall, then glide once fully turned. Splitting
-  // these into two phases - instead of rotating and translating at once - keeps the sprite's
-  // feet planted on real solid ground for the whole transition, rather than swinging through
-  // open air with a half-turned angle partway through a single glide.
-  _beginAntConcaveTurn(c, newWallDx, newWallDy, newTravelDx, newTravelDy, toCol, toRow, interval) {
-    _setAntWall(c, newWallDx, newWallDy, false);
-    c._rotDuration = interval * 0.5;
-    c.travelDx = newTravelDx;
-    c.travelDy = newTravelDy;
-    c._fromCol = c.col; c._fromRow = c.row;
-    c._toCol = c.col; c._toRow = c.row;
+  // A plain straight glide: same wall, same rotation, just moves to the next cell's own
+  // anchor point (the spot on that cell's wall-line where its feet touch).
+  _beginAntStraight(c, toCol, toRow, interval) {
+    const anchor = _antAnchor(toCol, toRow, c.wallDx, c.wallDy);
+    c._fromX = c.px; c._fromY = c.py;
+    c._toX = anchor.x; c._toY = anchor.y;
     c._elapsed = 0;
-    c._duration = c._rotDuration;
+    c._duration = interval;
     c.isBusy = true;
     c._waitTimer = 0;
-    c._pendingMove = { col: toCol, row: toRow, interval };
+    c._pendingCol = toCol;
+    c._pendingRow = toRow;
+    c._pendingLeg = null;
   }
 
-  // The destination cell for an outside corner is only solid-adjacent via the NEW wall, not
-  // the old one - so unlike the concave case, there's no single cell valid for both
-  // orientations to pivot at. Instead: glide across first with the OLD orientation held fixed
-  // (no rotation happening mid-air over the gap), then pivot in place once safely landed on
-  // ground that's actually solid for the new wall.
-  _beginAntConvexTurn(c, newWallDx, newWallDy, newTravelDx, newTravelDy, toCol, toRow, interval) {
-    this._beginStep(c, toCol, toRow, interval);
-    c._pendingWallTurn = { wallDx: newWallDx, wallDy: newWallDy, travelDx: newTravelDx, travelDy: newTravelDy };
+  // Every corner - concave or convex, tunnel or surface-to-hole - reduces to the same two-leg
+  // glide: the ant keeps moving in its OLD direction until its feet reach the exact corner
+  // vertex (the point where the old wall-line ends), then picks up the NEW direction from that
+  // same point and keeps going. Rotation only changes at the instant leg 2 begins - it's never
+  // interpolated - so the sprite's feet are on real solid ground for the whole transition,
+  // whichever leg it's currently on. Both legs are always exactly half a tile, so a full corner
+  // takes exactly as long as a straight tile - no special-casing needed for which kind of
+  // corner this is; the vertex/next-cell math is identical either way.
+  _beginAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, interval) {
+    const vertexX = c.px + c.travelDx * 0.5;
+    const vertexY = c.py + c.travelDy * 0.5;
+    const newCol = Math.round(vertexX + newTravelDx * 0.5 - newWallDx * 0.5 - 0.5);
+    const newRow = Math.round(vertexY + newTravelDy * 0.5 - newWallDy * 0.5 - 0.5);
+    const newAnchor = _antAnchor(newCol, newRow, newWallDx, newWallDy);
+
+    c._fromX = c.px; c._fromY = c.py;
+    c._toX = vertexX; c._toY = vertexY;
+    c._elapsed = 0;
+    c._duration = interval * 0.5;
+    c.isBusy = true;
+    c._waitTimer = 0;
+    c._pendingCol = newCol;
+    c._pendingRow = newRow;
+    c._pendingLeg = {
+      wallDx: newWallDx, wallDy: newWallDy, travelDx: newTravelDx, travelDy: newTravelDy,
+      toX: newAnchor.x, toY: newAnchor.y, duration: interval * 0.5,
+    };
   }
 
-  // Called once a busy ant glide/pivot finishes - chains into whichever second phase (if any)
-  // _beginAntConcaveTurn/_beginAntConvexTurn queued up, so the whole turn plays out over
-  // consecutive frames without an extra decision-making pass in between.
-  _resolveAntPending(c) {
-    if (c._pendingMove) {
-      const { col, row, interval } = c._pendingMove;
-      c._pendingMove = null;
-      this._beginStep(c, col, row, interval);
-    } else if (c._pendingWallTurn) {
-      const { wallDx, wallDy, travelDx, travelDy } = c._pendingWallTurn;
-      c._pendingWallTurn = null;
-      _setAntWall(c, wallDx, wallDy, false);
-      c._rotDuration = CREATURE_STATS.ANT.moveIntervalMs * 0.5;
-      c.travelDx = travelDx;
-      c.travelDy = travelDy;
-      c._fromCol = c.col; c._fromRow = c.row;
-      c._toCol = c.col; c._toRow = c.row;
-      c._elapsed = 0;
-      c._duration = c._rotDuration;
-      c.isBusy = true;
-      c._waitTimer = 0;
-    }
+  // Starts the second leg of a corner once the first (to the vertex) finishes - rotation snaps
+  // to the new wall right here, with no glide/pivot animation of its own.
+  _beginAntLeg(c, leg) {
+    c.wallDx = leg.wallDx;
+    c.wallDy = leg.wallDy;
+    c.travelDx = leg.travelDx;
+    c.travelDy = leg.travelDy;
+    c._fromX = c.px; c._fromY = c.py;
+    c._toX = leg.toX; c._toY = leg.toY;
+    c._elapsed = 0;
+    c._duration = leg.duration;
+    c.isBusy = true;
+    c._waitTimer = 0;
   }
 
   /** Call after ant step animations complete to resolve any pending bite. */
@@ -576,18 +559,6 @@ export class CreatureManager {
 
 }
 
-// True if, starting at (col,row) with the given wall/travel orientation, taking one more step
-// forward would immediately hit another corner (concave or convex). That single-tile-only
-// validity is the signature of one tread/riser of a staircase, as opposed to a real corner
-// with a straight run on the other side of it.
-function _isImmediateCorner(map, col, row, wallDx, wallDy, travelDx, travelDy) {
-  const isSolid = (x, y) => map.getTile(x, y).solid;
-  const aheadX = col + travelDx, aheadY = row + travelDy;
-  if (isSolid(aheadX, aheadY)) return true;
-  const wallAheadX = aheadX + wallDx, wallAheadY = aheadY + wallDy;
-  return !isSolid(wallAheadX, wallAheadY);
-}
-
 function shuffled(arr) {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -601,12 +572,13 @@ function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
-// Shortest-path angle interpolation (handles the +-pi wraparound) so a rotation animation
-// always turns the short way around instead of occasionally spinning the long way.
-function lerpAngle(a, b, t) {
-  const twoPi = Math.PI * 2;
-  const diff = (((b - a + Math.PI) % twoPi) + twoPi) % twoPi - Math.PI;
-  return a + diff * t;
+// The point where an ant's feet touch: the shared edge between its open cell and the solid
+// neighbor at (wallDx,wallDy), centered along the perpendicular (travel) axis. This - not a
+// cell center - is what an ant's (px,py) always is. Cell (col,row) spans world tile-units
+// [col,col+1) x [row,row+1) (its own top-left corner is (col,row), matching every other tile
+// coordinate in this codebase), so its center is (col+0.5,row+0.5), not (col,row) itself.
+function _antAnchor(col, row, wallDx, wallDy) {
+  return { x: col + 0.5 + wallDx * 0.5, y: row + 0.5 + wallDy * 0.5 };
 }
 
 // ---------------------------------------------------------------------------
@@ -624,52 +596,24 @@ const FOOT_OFFSET = { TERMITE: 4, BEETLE: 5 };
 
 // Rotation that puts local "down" (feet) onto the wall the ant is clinging to. Derived from
 // rotate(0,1,angle) = wallSide: canvas rotate(theta) sends local (0,1) to (-sin(theta),
-// cos(theta)), so matching that to (wallDx,wallDy) gives theta = atan2(-wallDx, wallDy).
+// cos(theta)), so matching that to (wallDx,wallDy) gives theta = atan2(-wallDx, wallDy). This
+// is always computed fresh from the ant's CURRENT wallDx/wallDy - never animated/interpolated
+// - so it snaps instantly the moment wallDx/wallDy change (see _beginAntCorner/_beginAntLeg).
 function _wallAngle(wallDx, wallDy) {
   return Math.atan2(-wallDx, wallDy);
-}
-
-// The diagonal angle bisecting two adjacent cardinal wall directions - used while an ant is
-// mid-staircase, so its feet lean into the slope instead of popping between the two cardinal
-// orientations every single tile.
-function _wallBisectAngle(wallDxA, wallDyA, wallDxB, wallDyB) {
-  return Math.atan2(-(wallDxA + wallDxB), wallDyA + wallDyB);
-}
-
-// The ant's currently rendered rotation, animating smoothly from the angle it had before its
-// last orientation change to the target angle set by that change (see _setAntWall).
-function _currentAntAngle(c) {
-  const t = c._rotDuration > 0 ? Math.min(1, c._rotElapsed / c._rotDuration) : 1;
-  return lerpAngle(c._angleFrom, c._angleTo, t);
-}
-
-// Changes which wall an ant clings to, kicking off a smooth rotation from its current visual
-// angle to the new one - a cardinal angle for a real corner, or the diagonal bisector for one
-// tile of a staircase (see _stepAntTunnel).
-function _setAntWall(c, newWallDx, newWallDy, staircase) {
-  const fromAngle = _currentAntAngle(c);
-  const toAngle = staircase
-    ? _wallBisectAngle(c.wallDx, c.wallDy, newWallDx, newWallDy)
-    : _wallAngle(newWallDx, newWallDy);
-  c.wallDx = newWallDx;
-  c.wallDy = newWallDy;
-  c._angleFrom = fromAngle;
-  c._angleTo = toAngle;
-  c._rotElapsed = 0;
-  c._rotDuration = CREATURE_STATS.ANT.moveIntervalMs;
 }
 
 export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
   const t = nowMs / 1000;
   const s = tileSize / 48;
-  const cx = screenX + tileSize / 2;
-  const cy = screenY + tileSize / 2;
-
-  ctx.save();
-  ctx.translate(cx, cy);
 
   if (c.type === "ANT") {
-    ctx.rotate(_currentAntAngle(c));
+    // c.px,c.py IS the ant's foot position (bottom-center of its sprite) directly, so
+    // screenX,screenY (originX/Y + c.px/py*tileSize, from game.js) is already the exact point
+    // to plant its feet - no cell-centering offset needed, unlike the other creature types.
+    ctx.save();
+    ctx.translate(screenX, screenY);
+    ctx.rotate(_wallAngle(c.wallDx, c.wallDy));
     // Flip so the ant visually walks the direction it's actually traveling, whichever surface
     // it's currently on - "local right" (unflipped) is the wall direction rotated 90deg CCW.
     const localRightDx = c.wallDy, localRightDy = -c.wallDx;
@@ -678,7 +622,17 @@ export function drawCreature(ctx, c, screenX, screenY, tileSize, nowMs) {
     // convention above, so the mirror condition is inverted from the usual flip=1/-1 pattern.
     ctx.scale(facingLocalRight ? -1 : 1, 1);
     drawAnt(ctx, tileSize, t, c.isBusy);
-  } else if (c.type === "WORM") {
+    ctx.restore();
+    return;
+  }
+
+  const cx = screenX + tileSize / 2;
+  const cy = screenY + tileSize / 2;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  if (c.type === "WORM") {
     // Worms are drawn separately (see the exported drawWorm below) - each body segment lives
     // in its own real grid cell, so it needs the camera origin rather than one shared point.
   } else {
@@ -910,14 +864,14 @@ export function drawWorm(ctx, map, c, originX, originY, tileSize) {
 const ANT_DISPLAY_SCALE = 0.5;
 const ANT_WALK_FPS = 5; // walk-cycle playback speed while moving
 
-// The 6 walk-cycle frames fill their own 64x64 cell with feet at the bottom edge; anchor that
-// bottom edge to tileSize/2 (the wall-facing edge, pre-rotation) so scaling down still keeps
-// the ant's feet planted on the surface it's clinging to instead of floating mid-cell.
+// The 6 walk-cycle frames fill their own 64x64 cell with feet at the bottom edge; the local
+// origin here IS the ant's foot position (see drawCreature), so the sprite is drawn with its
+// own bottom edge sitting exactly at y=0, centered horizontally.
 function drawAnt(ctx, tileSize, t, moving) {
   if (!antWalkSprites) return;
   const frame = moving ? Math.floor(t * ANT_WALK_FPS) % antWalkSprites.length : 0;
   const size = tileSize * ANT_DISPLAY_SCALE;
-  ctx.drawImage(antWalkSprites[frame], -size / 2, tileSize / 2 - size, size, size);
+  ctx.drawImage(antWalkSprites[frame], -size / 2, -size, size, size);
 }
 
 function drawTermite(ctx, s, t, moving) {
