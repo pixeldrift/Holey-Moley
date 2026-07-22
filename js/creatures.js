@@ -490,6 +490,19 @@ export class CreatureManager {
       return;
     }
 
+    // A mole dig starting right at the surface only diagonally shapes the underground elbow -
+    // the grass tile itself isn't diggable, so cutCorner/carveDiagonal no-ops on it and the
+    // surface above reads as ordinary intact ground even though the floor just past it ramps
+    // down at 45 degrees instead of ending in a square drop (see tiles.js SHAPE). This is the
+    // very first place any ant ever meets a diagonal dig, since every ant starts on the
+    // surface - so it needs the same ramp check _stepAntTunnel does for its own floor-ahead,
+    // checked BEFORE concluding there's no floor at all.
+    const floorTile = map.getTile(nc, c.row + 1);
+    if (floorTile.solid && !map.isEdgeSolid(nc, c.row + 1, 0, 1)) {
+      this._beginAntRamp(c, nc, c.row + 1, stats.moveIntervalMs);
+      return;
+    }
+
     if (!map.hasFloorBelow(nc, c.row)) {
       // Commit to the hole: curl down into it - same shape as any other corner (see
       // _resolveAntCorner), just starting from the surface instead of a dug tunnel wall.
@@ -803,12 +816,19 @@ function _wallAngle(wallDx, wallDy) {
   return Math.atan2(-wallDx, wallDy);
 }
 
-// During a ramp's middle leg (see _beginAntRamp) the ant's real wall never changes, but its
-// path there is a straight 45 degree line, not the cardinal wall direction - c._diagonalDx/
-// _diagonalDy (travel+wall summed) IS that line's direction, so the same rotate-onto-(0,1)
-// derivation used by _wallAngle applies to it directly.
+// During a ramp's diagonal leg (see _beginAntRamp) the ant's real wall never changes, but its
+// path there runs straight along the slope. c._diagonalDx/_diagonalDy (travel+wall summed) IS
+// that path's direction - but that's the TANGENT (parallel to the cut line, the direction the
+// ant is physically moving), not a "toward the wall" normal the way a cardinal wallDx/wallDy
+// is, so it can't be fed into the same rotate-onto-(0,1) formula _wallAngle uses directly -
+// doing so was rotating the sprite 90 degrees off from the real slope. Since wall and travel
+// are always perpendicular unit vectors, wall-travel is the OTHER 45 degree diagonal - the one
+// actually perpendicular to the tangent, pointing from the ant's open path toward the solid
+// wedge it's sliding along (verified against the real corner-cut geometry in tiles.js/
+// textures.js, not just algebra: e.g. a floor ramping down-right, wall=(0,1) travel=(1,0),
+// gives wall-travel=(-1,1), matching that tile's actual retained corner direction).
 function _antRenderAngle(c) {
-  if (c._diagonalDx != null) return Math.atan2(-c._diagonalDx, c._diagonalDy);
+  if (c._diagonalDx != null) return Math.atan2(-(c.wallDx - c.travelDx), c.wallDy - c.travelDy);
   return _wallAngle(c.wallDx, c.wallDy);
 }
 
