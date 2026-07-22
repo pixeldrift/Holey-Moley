@@ -305,12 +305,28 @@ export class TileMap {
 
   // A rare buried decoration - at most one per map, resting on a ROOT tile (see
   // textures.js drawUndergroundDecorations). Picked once here, not at render time, so it
-  // can't accidentally show up more than once.
+  // can't accidentally show up more than once. Roots are meant to be exclusive of other
+  // buried decorations rather than layering with them, so candidates also exclude any ROOT
+  // tile that falls within a large tree's giant root art - a generous margin around its
+  // actual (fractionally-centered) footprint, since being a little conservative here just
+  // means fewer candidate tiles, not a visible bug.
   _placeSkeleton(rng) {
+    const largeTreeCols = [];
+    for (let x = 0; x < this.width; x++) {
+      const f = this.surfaceFeatures[x];
+      if (f?.type === "tree" && f.size === "large") largeTreeCols.push(x);
+    }
+    const trunkRow = this.surfaceRow + 1;
+    const inRootGiantFootprint = (col, row) =>
+      row >= trunkRow && row <= trunkRow + 4 &&
+      largeTreeCols.some((tc) => col >= tc - 3 && col <= tc + 4);
+
     const candidates = [];
     for (let y = this.surfaceRow + 1; y < this.height; y++) {
       for (let x = 0; x < this.width; x++) {
-        if (this.getTile(x, y) === TILE.ROOT) candidates.push({ col: x, row: y });
+        if (this.getTile(x, y) === TILE.ROOT && !inRootGiantFootprint(x, y)) {
+          candidates.push({ col: x, row: y });
+        }
       }
     }
     this.skeletonTile = candidates.length
