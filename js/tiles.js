@@ -223,17 +223,29 @@ export class TileMap {
    * True if an entity standing in the open cell at (col-fromDx,row-fromDy) can move directly
    * into tile (col,row) - fromDx,fromDy is the direction FROM that open cell TO this tile,
    * same convention as isEdgeSolid - without digging: either the tile isn't solid at all, or
-   * it's a diagonal tile (see SHAPE) and this is its open corner. A diagonal approach (both
-   * fromDx and fromDy nonzero) always requires digging - isEdgeSolid's edge-by-edge check only
-   * has a well-defined answer for a single cardinal direction, and every diagonal DIG already
-   * fully clears its destination tile (see Mole._completeAction), so free diagonal entry into
-   * a leftover diagonal shape from some earlier, unrelated dig never actually arises.
+   * it's a diagonal tile (see SHAPE) and this is its open corner. For a cardinal approach,
+   * isEdgeSolid's edge-by-edge check already answers that directly. A diagonal approach (both
+   * fromDx and fromDy nonzero) instead has to compare against diagonalSlopeDir - free entry
+   * only when fromDx,fromDy points the SAME way as the tile's own solid-corner direction (an
+   * entity travelling that exact diagonal enters right at the tile's open corner and never
+   * crosses the solid half at all - verified by tracing the straight-line entry point in tile-
+   * relative coordinates, e.g. an NE tile's solidDir (1,-1) traced from its SW-adjacent
+   * neighbor lands exactly on the SW corner, which is strictly on the open side of the cut);
+   * any other diagonal, or a FULL tile, still requires digging. This is what lets a non-digging
+   * mole (see Mole.requestMove's digging parameter) walk/climb diagonally through a notch the
+   * same way an ant already ramps through one, instead of always needing to dig even when the
+   * corner is already open.
    */
   canEnter(col, row, fromDx, fromDy) {
     const tile = this.getTile(col, row);
     if (!tile.solid) return true;
-    if (fromDx !== 0 && fromDy !== 0) return false;
-    return this.getShape(col, row) !== SHAPE.FULL && !this.isEdgeSolid(col, row, fromDx, fromDy);
+    const shape = this.getShape(col, row);
+    if (shape === SHAPE.FULL) return false;
+    if (fromDx !== 0 && fromDy !== 0) {
+      const solidDir = this.diagonalSlopeDir(col, row);
+      return fromDx === solidDir.dx && fromDy === solidDir.dy;
+    }
+    return !this.isEdgeSolid(col, row, fromDx, fromDy);
   }
 
   /** True if this open cell has a solid floor directly beneath it (surface bugs walk here) -

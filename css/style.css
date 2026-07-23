@@ -154,6 +154,34 @@ html, body {
   justify-self: center;
 }
 
+/* Hold-to-dig control - floats over the bottom-right of the canvas (not part of the top HUD
+   row) so it's always thumb-reachable without blocking the view of the mole. Movement itself
+   is a drag/swipe anywhere on the canvas, so this needs to be its own element with its own
+   pointer handling (see InputController.bindDigButton) rather than competing with that drag. */
+.dig-btn {
+  position: absolute;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: rgba(20, 20, 20, 0.55);
+  color: #fff;
+  font-size: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  z-index: 5;
+}
+
+.dig-btn.active {
+  background: rgba(210, 130, 40, 0.9);
+  border-color: rgba(255, 255, 255, 0.7);
+  transform: scale(0.94);
+}
+
 /* ---------- Overlays ---------- */
 
 .overlay {
