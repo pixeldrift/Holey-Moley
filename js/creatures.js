@@ -233,12 +233,18 @@ export class CreatureManager {
       return;
     }
 
+    // Every glide - flat, a corner's half-tile leg, or a ramp's diagonal segment - moves at a
+    // constant velocity (c._vx,c._vy, in world units per ms) set once when the leg begins (see
+    // _beginAntStraight/_beginAntCorner/_beginAntRamp/_beginAntLeg): just the direction implied
+    // by whatever the next tile's angle turned out to be (flat, 90 degrees, or 45), times speed.
+    // Arrival is a plain "did this frame's step reach the target" distance check, not a time
+    // ratio - lets every leg type share the same handful of lines instead of each computing its
+    // own progress fraction.
     if (c.isBusy) {
-      c._elapsed += dt;
-      const t = Math.min(1, c._elapsed / c._duration);
-      c.px = lerp(c._fromX, c._toX, t);
-      c.py = lerp(c._fromY, c._toY, t);
-      if (t >= 1) {
+      const remainingX = c._toX - c.px, remainingY = c._toY - c.py;
+      const remaining = Math.hypot(remainingX, remainingY);
+      const step = Math.hypot(c._vx, c._vy) * dt;
+      if (step >= remaining || remaining < 1e-9) {
         c.px = c._toX;
         c.py = c._toY;
         if (c._pendingLeg) {
@@ -252,6 +258,9 @@ export class CreatureManager {
         c.isBusy = false;
         c._diagonalDx = null;
         c._diagonalDy = null;
+      } else {
+        c.px += c._vx * dt;
+        c.py += c._vy * dt;
       }
       return;
     }
@@ -557,16 +566,17 @@ export class CreatureManager {
   }
 
   // A plain straight glide: same wall, same rotation, just moves to the next cell's own
-  // anchor point (the spot on that cell's wall-line where its feet touch). The destination's
+  // anchor point (the spot on that cell's wall-line where its feet touch) at the ant's usual
+  // speed (1 tile per `interval` ms) in its current travel direction. The destination's
   // wall-cell is already known solid (whatever called this just checked it), so _wallCol/Row
   // update to it immediately rather than waiting for arrival - that's what lets a dig ahead of
   // the ant mid-glide be noticed right away instead of only at the next decision point.
   _beginAntStraight(c, toCol, toRow, interval) {
     const anchor = _antAnchor(toCol, toRow, c.wallDx, c.wallDy);
-    c._fromX = c.px; c._fromY = c.py;
+    const speed = 1 / interval; // tiles per ms
     c._toX = anchor.x; c._toY = anchor.y;
-    c._elapsed = 0;
-    c._duration = interval;
+    c._vx = c.travelDx * speed;
+    c._vy = c.travelDy * speed;
     c.isBusy = true;
     c._waitTimer = 0;
     c._pendingCol = toCol;
@@ -603,18 +613,19 @@ export class CreatureManager {
   _beginAntCorner(c, newWallDx, newWallDy, newTravelDx, newTravelDy, interval) {
     const { vertexX, vertexY, newCol, newRow } = this._antCornerTarget(c, newWallDx, newWallDy, newTravelDx, newTravelDy);
     const newAnchor = _antAnchor(newCol, newRow, newWallDx, newWallDy);
+    const speed = 1 / interval; // tiles per ms - the same constant speed every leg moves at;
+    // only ever the DIRECTION changes to match whatever angle the next tile turned out to be.
 
-    c._fromX = c.px; c._fromY = c.py;
     c._toX = vertexX; c._toY = vertexY;
-    c._elapsed = 0;
-    c._duration = interval * 0.5;
+    c._vx = c.travelDx * speed;
+    c._vy = c.travelDy * speed;
     c.isBusy = true;
     c._waitTimer = 0;
     c._pendingCol = newCol;
     c._pendingRow = newRow;
     c._pendingLeg = {
       wallDx: newWallDx, wallDy: newWallDy, travelDx: newTravelDx, travelDy: newTravelDy,
-      toX: newAnchor.x, toY: newAnchor.y, duration: interval * 0.5,
+      toX: newAnchor.x, toY: newAnchor.y, vx: newTravelDx * speed, vy: newTravelDy * speed,
       wallCol: newCol + newWallDx, wallRow: newRow + newWallDy,
     };
   }
@@ -634,6 +645,10 @@ export class CreatureManager {
   _beginAntRamp(c, rampCol, rampRow, interval) {
     const { wallDx, wallDy, travelDx, travelDy } = c;
     const diagonalDx = travelDx + wallDx, diagonalDy = travelDy + wallDy;
+    const speed = 1 / interval; // tiles per ms - same speed as every other leg, just a diagonal
+    // direction here, which is why crossing 1 diagonal tile (distance sqrt(2)) naturally takes
+    // sqrt(2) times as long as a cardinal one at this same speed - no separate case needed.
+    const diagVx = (diagonalDx / Math.SQRT2) * speed, diagVy = (diagonalDy / Math.SQRT2) * speed;
 
     const vertex1X = c.px + travelDx * 0.5;
     const vertex1Y = c.py + travelDy * 0.5;
@@ -659,7 +674,7 @@ export class CreatureManager {
     // segment prepended in reverse, all sharing the same cosmetic diagonal render angle.
     let nextLeg = {
       wallDx, wallDy, travelDx, travelDy,
-      toX: newAnchor.x, toY: newAnchor.y, duration: interval * 0.5,
+      toX: newAnchor.x, toY: newAnchor.y, vx: travelDx * speed, vy: travelDy * speed,
       wallCol: elbowCol, wallRow: elbowRow,
       diagonalDx: null, diagonalDy: null, next: null,
     };
@@ -667,7 +682,7 @@ export class CreatureManager {
       const seg = segments[i];
       nextLeg = {
         wallDx, wallDy, travelDx, travelDy,
-        toX: seg.toX, toY: seg.toY, duration: interval * Math.SQRT2,
+        toX: seg.toX, toY: seg.toY, vx: diagVx, vy: diagVy,
         wallCol: seg.wallCol, wallRow: seg.wallRow,
         // The true 45 degree angle of the ramp itself (travel and wall are always perpendicular
         // unit vectors, so their sum is a valid diagonal) - purely cosmetic, used instead of the
@@ -677,10 +692,8 @@ export class CreatureManager {
       };
     }
 
-    c._fromX = c.px; c._fromY = c.py;
     c._toX = vertex1X; c._toY = vertex1Y;
-    c._elapsed = 0;
-    c._duration = interval * 0.5;
+    c._vx = travelDx * speed; c._vy = travelDy * speed;
     c.isBusy = true;
     c._waitTimer = 0;
     c._pendingCol = newCol;
@@ -702,10 +715,8 @@ export class CreatureManager {
     c.travelDy = leg.travelDy;
     c._wallCol = leg.wallCol;
     c._wallRow = leg.wallRow;
-    c._fromX = c.px; c._fromY = c.py;
     c._toX = leg.toX; c._toY = leg.toY;
-    c._elapsed = 0;
-    c._duration = leg.duration;
+    c._vx = leg.vx; c._vy = leg.vy;
     c.isBusy = true;
     c._waitTimer = 0;
     c._diagonalDx = leg.diagonalDx ?? null;
