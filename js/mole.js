@@ -3,6 +3,7 @@ import { ENERGY, FOOD_TYPES, FOOD_ID_TO_TYPE } from "./constants.js";
 
 const WALK_DURATION = 220;
 const CLIMB_DURATION = 260;
+const FALL_SPEED_MULTIPLIER = 1.5; // falling off a wall drops faster than climbing it
 
 // Which corner stays solid on each of the two "elbow" tiles (the orthogonal neighbors
 // flanking a diagonal step), keyed by the move's [dx,dy]. See tiles.js SHAPE.
@@ -33,6 +34,15 @@ export class Mole {
     this.bumpTimer = 0;
     this.eatTimer = 0;
     this.hurtTimer = 0;
+
+    // Non-digging wall-climbing state (see requestMove). 0 = ordinary footing; +/-1 = clinging
+    // to a vertical wall on that side of the mole's own open cell, same convention as an ant's
+    // wallDx. falling is true while dropping straight down after letting go of a wall with
+    // nothing else to grab (see _beginFall/_tickFall) - unlike an ant, the mole has no ceiling-
+    // clinging state to fall out of, only this wall-release case.
+    this.wallDx = 0;
+    this.falling = false;
+    this._pendingFall = false;
     this.onScoreChange = null;
     this.onEnergyChange = null;
     this.onStarsEarned = null;
@@ -65,19 +75,27 @@ export class Mole {
     return this.actionTarget !== null;
   }
 
-  /** Request movement in a grid direction (8-way). By default this only ever walks/climbs
-   *  through already-open tunnel (including a diagonal tile's already-open corner, without
-   *  digging - see TileMap.canEnter) - it never carves new tunnel on its own. Pass digging=true
-   *  (held down by the player, see InputController.isDigging) to also dig through a blocked
-   *  diggable wall, same as any other move; without it, a blocked wall is bumped into exactly
-   *  like impassable rock, so building a tunnel is always an intentional act. */
+  /** Request movement in a grid direction (8-way). Pass digging=true (held down by the player,
+   *  see InputController.isDigging) to dig through a blocked diggable wall like any other move;
+   *  without it, movement is restricted to whatever tunnel already exists - see
+   *  _requestSurfaceMove for exactly what "already exists" means once walls and overhangs are
+   *  involved. */
   requestMove(dx, dy, digging = false) {
     if (this.state === "sleep") return;
-    if (this.isBusy) return;
+    if (this.isBusy || this.falling) return;
     dx = Math.sign(dx);
     dy = Math.sign(dy);
     if (dx === 0 && dy === 0) return;
 
+    if (digging) {
+      this.wallDx = 0; // digging always lets go of a wall and returns to plain footing
+      this._requestDiggingMove(dx, dy);
+    } else {
+      this._requestSurfaceMove(dx, dy);
+    }
+  }
+
+  _requestDiggingMove(dx, dy) {
     const targetCol = this.col + dx;
     const targetRow = this.row + dy;
     if (!this.map.inBounds(targetCol, targetRow)) return;
@@ -94,7 +112,7 @@ export class Mole {
     const targetTile = this.map.getTile(targetCol, targetRow);
 
     if (!this.map.canEnter(targetCol, targetRow, dx, dy)) {
-      if (!targetTile.diggable || !digging) {
+      if (!targetTile.diggable) {
         this._bump();
         return;
       }
@@ -104,10 +122,122 @@ export class Mole {
       return;
     }
 
-    // Open space - including walking/climbing straight through a diagonal tile's already-open
-    // corner without digging (see TileMap.canEnter) - climbing if there's any vertical
-    // component (includes diagonals), walking if purely horizontal.
-    const isVertical = dy !== 0;
+    this._beginWalkOrClimb(targetCol, targetRow, dx, dy, distanceScale, targetTile);
+  }
+
+  // Not digging: walk/climb along whatever surface already exists, never carving new tunnel.
+  // A 45 degree incline (an already-open diagonal corner, see TileMap.canEnter) still counts
+  // as walking - see _beginWalkOrClimb. Bumping into a genuine vertical wall while walking
+  // grabs onto it and climbs UP instead of just stopping, converting the same horizontal press
+  // into upward motion without the player needing to switch to pressing Up. Once attached
+  // (this.wallDx != 0) that same direction keeps climbing; the opposite direction lets go,
+  // landing on solid ground right there, re-attaching to a facing wall across a narrow shaft,
+  // or falling if there's neither. Unlike an ant, the mole never clings upside down - if the
+  // wall it's climbing stops continuing, that's an overhang, and it's a hard barrier (dig
+  // through it instead) rather than somewhere to wrap onto a ceiling.
+  _requestSurfaceMove(dx, dy) {
+    if (this.wallDx !== 0 && this._hasFloorBelow()) {
+      this.wallDx = 0; // reached solid ground - even mid-climb, that's ordinary footing again
+    }
+
+    if (this.wallDx !== 0 && dy === 0) {
+      if (dx === -this.wallDx) {
+        this._releaseWall();
+        return;
+      }
+      // Pressing back toward the wall (or just still holding the direction that first grabbed
+      // it) is exactly holding Up while attached.
+      dx = 0;
+      dy = -1;
+    }
+
+    const targetCol = this.col + dx, targetRow = this.row + dy;
+    if (!this.map.inBounds(targetCol, targetRow)) return;
+    if (targetRow < this.map.skyRows) return;
+
+    if (dx > 0) this.facing = "right";
+    if (dx < 0) this.facing = "left";
+
+    const isDiagonal = dx !== 0 && dy !== 0;
+    const distanceScale = isDiagonal ? Math.SQRT2 : 1;
+    const targetTile = this.map.getTile(targetCol, targetRow);
+
+    if (this.map.canEnter(targetCol, targetRow, dx, dy)) {
+      if (this.wallDx !== 0 && dy < 0 && !this._wallContinuesAt(targetRow)) {
+        this._bump(); // the wall ends here - an overhang, not somewhere to climb onto
+        return;
+      }
+      this._beginWalkOrClimb(targetCol, targetRow, dx, dy, distanceScale, targetTile);
+      if (dx !== 0 && dy === 0) this.wallDx = 0; // a plain sideways walk means normal footing
+      return;
+    }
+
+    // Blocked, not digging: a vertical wall met by a purely horizontal press is climbed
+    // instead of bumped. Anything else (an un-diggable wall/rock, or a blocked vertical move)
+    // is a genuine barrier while not digging.
+    if (dy === 0 && dx !== 0 && this.wallDx === 0) {
+      this._attemptAttach(dx);
+      return;
+    }
+    this._bump();
+  }
+
+  _hasFloorBelow() {
+    return this.map.getTile(this.col, this.row + 1).solid && this.map.isEdgeSolid(this.col, this.row + 1, 0, 1);
+  }
+
+  _wallContinuesAt(row) {
+    return this.map.getTile(this.col + this.wallDx, row).solid;
+  }
+
+  // First contact with a vertical wall while walking - grab on and immediately climb up one
+  // step, exactly as if the player had pressed Up instead of the direction that just got
+  // blocked. Never digs; a wall too short to climb at all (blocked immediately above) just
+  // bumps instead of attaching to nothing.
+  _attemptAttach(dx) {
+    const targetRow = this.row - 1;
+    if (!this.map.inBounds(this.col, targetRow) || targetRow < this.map.skyRows) {
+      this._bump();
+      return;
+    }
+    this.wallDx = dx;
+    if (!this._wallContinuesAt(targetRow) || !this.map.canEnter(this.col, targetRow, 0, -1)) {
+      this.wallDx = 0;
+      this._bump();
+      return;
+    }
+    const targetTile = this.map.getTile(this.col, targetRow);
+    this._beginWalkOrClimb(this.col, targetRow, 0, -1, 1, targetTile);
+  }
+
+  // Letting go of the currently-attached wall (pressed away from it) - lands on solid ground
+  // right there if there is any, re-attaches to a wall facing it across a narrow shaft if not,
+  // or starts falling once that step lands if there's neither.
+  _releaseWall() {
+    const awayDx = -this.wallDx;
+    const targetCol = this.col + awayDx;
+    if (!this.map.inBounds(targetCol, this.row)) return;
+    if (!this.map.canEnter(targetCol, this.row, awayDx, 0)) {
+      this._bump(); // still boxed in on that side - stay put, still attached
+      return;
+    }
+
+    const targetTile = this.map.getTile(targetCol, this.row);
+    const hasFloor = this.map.getTile(targetCol, this.row + 1).solid && this.map.isEdgeSolid(targetCol, this.row + 1, 0, 1);
+    const hasOppositeWall = !hasFloor && this.map.getTile(targetCol + awayDx, this.row).solid;
+
+    this._beginWalkOrClimb(targetCol, this.row, awayDx, 0, 1, targetTile);
+    if (hasFloor) this.wallDx = 0;
+    else if (hasOppositeWall) this.wallDx = awayDx;
+    else this._pendingFall = true;
+  }
+
+  // Shared by both digging and non-digging moves once a target cell is known to be enterable
+  // without digging (see TileMap.canEnter) - a diagonal glide through an already-open corner
+  // counts as walking, not climbing (a 45 degree incline is still just a slope you walk up),
+  // so only a purely vertical move (no horizontal component at all) is a real climb.
+  _beginWalkOrClimb(targetCol, targetRow, dx, dy, distanceScale, targetTile) {
+    const isVertical = dy !== 0 && dx === 0;
     const duration = (isVertical ? CLIMB_DURATION : WALK_DURATION) * distanceScale * this.speedFactor;
     const cost = isVertical ? ENERGY.CLIMB_COST : ENERGY.WALK_COST;
     this._beginAction(isVertical ? MOVE_ACTION.CLIMB : MOVE_ACTION.WALK, targetCol, targetRow, duration, cost, targetTile);
@@ -144,6 +274,11 @@ export class Mole {
   }
 
   update(dt) {
+    if (this.falling) {
+      this._tickFall(dt);
+      return;
+    }
+
     if (this.bumpTimer > 0) this.bumpTimer = Math.max(0, this.bumpTimer - dt);
     if (this.hurtTimer > 0) this.hurtTimer = Math.max(0, this.hurtTimer - dt);
     if (this.eatTimer > 0) {
@@ -218,6 +353,33 @@ export class Mole {
     if (typeKey) {
       this._applyFood(typeKey);
     } else if (this.state !== "sleep") {
+      this.state = "idle";
+    }
+
+    if (this._pendingFall) {
+      this._pendingFall = false;
+      this._beginFall();
+    }
+  }
+
+  // Let go of a wall with nothing else to grab (see _releaseWall) - drops straight down from
+  // exactly where it landed until it reaches solid, upward-facing ground.
+  _beginFall() {
+    this.falling = true;
+    this.wallDx = 0;
+    this.state = "fall";
+  }
+
+  _tickFall(dt) {
+    this.py += ((FALL_SPEED_MULTIPLIER / CLIMB_DURATION) * dt);
+    this.row = Math.floor(this.py);
+    // A diagonal tile (see tiles.js SHAPE) is only real ground to land on if its upward-facing
+    // edge is solid - falling through the open half of one keeps falling, same as an ant.
+    if (this.map.getTile(this.col, this.row).solid && this.map.isEdgeSolid(this.col, this.row, 0, 1)) {
+      this.falling = false;
+      this.row -= 1;
+      this.py = this.row;
+      this.px = this.col;
       this.state = "idle";
     }
   }
