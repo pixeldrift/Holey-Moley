@@ -6,6 +6,7 @@
 // drawTerrainTile call.
 
 import { TILE, SHAPE } from "./tiles.js";
+import { SOLID_THRESHOLD } from "./field.js";
 
 let sprites = null;
 let materials = null; // { grass: [img,img,img,img], sand: [...], ... }
@@ -217,6 +218,134 @@ function _drawDiagonalTile(ctx, variants, col, row, shape, px, py, tileSize) {
   ctx.clip();
   ctx.drawImage(pickVariant(variants, col, row), px, py, tileSize, tileSize);
   ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// v2 (field.js) terrain rendering - additive, not wired into the live game yet. Reuses every
+// bit of the v1 art/logic above (_darkenedMaterialDraw, pickVariant, MATERIAL_FOR_TILE) so the
+// only thing that changes is WHERE the clip path comes from: field.tileSolidPolygons (marching
+// squares over the scalar density field) instead of _solidTrianglePoints' one fixed 45-degree
+// triangle per SHAPE. drawTerrainTile/_drawDiagonalTile above are untouched by any of this.
+// ---------------------------------------------------------------------------
+
+/** Same idea as drawTerrainTile, but the diggable-material clip shape comes from a
+ *  field.js ScalarField instead of tiles.js's SHAPE enum - any carved silhouette, not just one
+ *  of 5 fixed corner cuts. Non-diggable/special tiles (SURFACE, TUNNEL, SKY, food, scenery)
+ *  aren't field-driven yet and fall straight back to the v1 draw. */
+export function drawTerrainTileFieldClipped(ctx, map, field, tile, col, row, x, y, tileSize) {
+  if (!tile.diggable) {
+    drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize);
+    return;
+  }
+
+  const px = Math.round(x);
+  const py = Math.round(y);
+  const material = MATERIAL_FOR_TILE[tile.id];
+  const variants = material ? materials[material] : null;
+  const solidFraction = field.tileSolidFraction(col, row);
+
+  if (solidFraction <= 0) {
+    _darkenedMaterialDraw(ctx, variants, col, row, px, py, tileSize);
+    return;
+  }
+  if (solidFraction >= 1) {
+    if (variants) {
+      ctx.drawImage(pickVariant(variants, col, row), px, py, tileSize, tileSize);
+    } else {
+      ctx.fillStyle = tile.color || "#000";
+      ctx.fillRect(px, py, tileSize, tileSize);
+    }
+    return;
+  }
+
+  _darkenedMaterialDraw(ctx, variants, col, row, px, py, tileSize);
+
+  const polygons = field.tileSolidPolygons(col, row);
+  if (polygons.length === 0) return;
+
+  ctx.save();
+  ctx.beginPath();
+  for (const poly of polygons) {
+    ctx.moveTo(px + (poly[0].x - col) * tileSize, py + (poly[0].y - row) * tileSize);
+    for (let i = 1; i < poly.length; i++) {
+      ctx.lineTo(px + (poly[i].x - col) * tileSize, py + (poly[i].y - row) * tileSize);
+    }
+    ctx.closePath();
+  }
+  ctx.clip();
+
+  if (variants) {
+    ctx.drawImage(pickVariant(variants, col, row), px, py, tileSize, tileSize);
+  } else {
+    ctx.fillStyle = tile.color || "#000";
+    ctx.fillRect(px, py, tileSize, tileSize);
+  }
+
+  // The inset/bevel look: stroke the real boundary line (field.tileContour) while still
+  // clipped to the solid region above - half the stroke's width falls outside the clip and
+  // gets thrown away, leaving only the inward-facing half, a shadow/highlight right at the
+  // edge that reads as the material being recessed rather than just cut off flat. Split into
+  // two passes by which way each segment faces (see _bevelSide) - a classic bevel isn't a flat
+  // dark ring, it's dark on the side facing away from the light and lit on the side facing it.
+  const contour = field.tileContour(col, row);
+  if (contour.length > 0) {
+    const shadowSegs = [], highlightSegs = [];
+    for (const s of contour) {
+      (_bevelSide(field, s) === "highlight" ? highlightSegs : shadowSegs).push(s);
+    }
+
+    const strokeGroup = (segs, style, width, blurPx) => {
+      if (segs.length === 0) return;
+      ctx.beginPath();
+      for (const s of segs) {
+        ctx.moveTo(px + (s.x1 - col) * tileSize, py + (s.y1 - row) * tileSize);
+        ctx.lineTo(px + (s.x2 - col) * tileSize, py + (s.y2 - row) * tileSize);
+      }
+      ctx.filter = blurPx ? `blur(${blurPx}px)` : "none";
+      ctx.strokeStyle = style;
+      ctx.lineWidth = width;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.stroke();
+      ctx.filter = "none";
+    };
+
+    strokeGroup(shadowSegs, "rgba(0, 0, 0, 0.8)", Math.max(3, tileSize * 0.22), tileSize * 0.12);
+    strokeGroup(highlightSegs, "rgba(255, 235, 200, 0.045)", Math.max(1.5, tileSize * 0.08), tileSize * 0.07);
+  }
+
+  ctx.restore();
+}
+
+// Light direction for the bevel, coming from the upper-left - the same default angle
+// Photoshop's own Bevel/Emboss layer style uses. A RECESSED hole reads correctly lit from a
+// given direction the opposite way a raised bump would: this is the well-known crater/moon
+// illusion (a real crater photographed with the sun to one side is bright on the rim FAR from
+// the sun and dark on the rim NEAR it, because the near wall's visible inner surface tilts away
+// from the light while the far wall's tilts toward it - it's also exactly why flipping a photo
+// of a crater upside-down makes it look like a dome, and vice versa). So for light coming from
+// the upper-left, the far (lower-right) rim of a dig is the lit one and the near (upper-left)
+// rim is the shadowed one - confirmed by direct feedback after the first version put it the
+// other way (which is the correct convention for an embossed/raised bump, not a dug-out hole).
+// A segment's relevant direction here is the one pointing INTO the hole (from the solid material
+// toward the open tunnel) - found by sampling the field a short distance off the line on each of
+// the two possible perpendicular sides and keeping whichever one reads as open (not the analytic
+// normal from the case topology, which would need the full 16-case table again just to get a
+// sign right - sampling the actual field is simpler and self-consistent with whatever
+// CASE_POLYGONS/EDGE_CROSSINGS already decided).
+const BEVEL_LIGHT_DIR = { x: -Math.SQRT1_2, y: -Math.SQRT1_2 };
+
+function _bevelSide(field, seg) {
+  const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = dy / len, ny = -dx / len;
+  const midX = (seg.x1 + seg.x2) / 2, midY = (seg.y1 + seg.y2) / 2;
+  const eps = 1.5 / field.res;
+  const intoHole = field.sampleWorld(midX + nx * eps, midY + ny * eps) < SOLID_THRESHOLD
+    ? { x: nx, y: ny }
+    : { x: -nx, y: -ny };
+  const dot = intoHole.x * BEVEL_LIGHT_DIR.x + intoHole.y * BEVEL_LIGHT_DIR.y;
+  return dot > 0 ? "highlight" : "shadow";
 }
 
 // ---------------------------------------------------------------------------
