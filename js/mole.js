@@ -445,6 +445,47 @@ function shade(hex, amt) {
   return `rgb(${r | 0},${g | 0},${b | 0})`;
 }
 
+// A diagonal tile (see tiles.js SHAPE) the mole is allowed to rest or glide inside of - see
+// TileMap.canEnter's diagonal-approach case - is still materially solid on one triangular
+// half; only the other half, centered a sixth of a tile off the tile's raw center toward the
+// open corner, is actually open ground (the two triangles split the tile along its diagonal
+// cut, so their centroids sit at 1/3 and 2/3 of the way across - 1/6 tile off center each way).
+// Drawing the sprite at the tile's literal center - which is where mole.px/py naturally lands,
+// dead center of whichever tile it's currently in or transitioning into/out of - draws it half
+// inside the still-solid triangle. This nudges the render (not the actual collision position)
+// toward the open triangle's centroid so the sprite visually clears the solid corner.
+function _diagonalRenderOffset(solidDir) {
+  return { x: -solidDir.dx / 6, y: -solidDir.dy / 6 };
+}
+
+// Rotation that puts the mole's local "down" (feet) onto the surface it's currently against -
+// same convention as the ant's _wallAngle (creatures.js): rotate(0,1) -> (wallDx,wallDy) gives
+// theta = atan2(-wallDx, wallDy). Ordinary flat ground is (0,1) - feet straight down, no tilt.
+function _wallAngle(wallDx, wallDy) {
+  return Math.atan2(-wallDx, wallDy);
+}
+
+// Wall-climbing (this.wallDx != 0, clinging to a side wall - see _requestSurfaceMove) always
+// wins: it's an explicit, intentional state, not something to infer from the tile underfoot,
+// and needs to stay correct even at rest (standing still partway up a shaft), not just mid-
+// animation. Otherwise, if the mole's current tile (nearest whole cell, same rounding
+// _diagonalRenderOffset uses) is a diagonal SHAPE, tilt to match its slope: a diagonal tile's
+// own retained-corner direction (solidDir, from TileMap.diagonalSlopeDir) IS the correct "wall"
+// to feed _wallAngle - the same relationship an ant's ramp render angle already relies on (see
+// creatures.js _antRenderAngle's doc comment: wall-travel, the diagonal leg's perpendicular-to-
+// tangent direction, equals that tile's own retained corner). A plain vertical move with no
+// wall reference at all (burrowing straight up/down through open dirt, not clinging to any
+// side) has no surface to match, so it keeps the older, simpler up/down tilt instead.
+function _moleRenderAngle(mole, solidDir) {
+  if (mole.wallDx !== 0) return _wallAngle(mole.wallDx, 0);
+  if (solidDir) return _wallAngle(solidDir.dx, solidDir.dy);
+  if (mole.actionType === MOVE_ACTION.CLIMB && mole.actionTarget) {
+    const goingUp = mole.actionTarget.row < mole.row;
+    return goingUp ? -Math.PI / 2 : Math.PI / 2;
+  }
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Procedural mole sprite. No image assets yet - this draws the mole and its
 // walk/dig/climb/eat/sleep animation cycles with canvas primitives. Swap the
@@ -462,16 +503,15 @@ export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
     return;
   }
 
-  ctx.save();
-  ctx.translate(screenX + tileSize / 2 + bump * -flip, screenY + tileSize / 2);
+  const solidDir = mole.map ? mole.map.diagonalSlopeDir(Math.round(mole.px), Math.round(mole.py)) : null;
+  const diagOffset = solidDir ? _diagonalRenderOffset(solidDir) : { x: 0, y: 0 };
 
-  const isVertical = mole.actionType === MOVE_ACTION.CLIMB;
-  if (isVertical && mole.actionTarget) {
-    const goingUp = mole.actionTarget.row < mole.row;
-    const fullTilt = goingUp ? -Math.PI / 2 : Math.PI / 2;
-    const isDiagonal = mole.actionTarget.col !== mole.col;
-    ctx.rotate(isDiagonal ? fullTilt / 2 : fullTilt);
-  }
+  ctx.save();
+  ctx.translate(
+    screenX + tileSize / 2 + bump * -flip + diagOffset.x * tileSize,
+    screenY + tileSize / 2 + diagOffset.y * tileSize
+  );
+  ctx.rotate(_moleRenderAngle(mole, solidDir));
   ctx.scale(flip, 1);
 
   const cycle = (t * 6) % (Math.PI * 2);
