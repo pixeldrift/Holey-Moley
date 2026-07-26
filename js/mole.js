@@ -192,8 +192,19 @@ export class Mole {
     const targetTile = this.map.getTile(targetCol, targetRow);
 
     if (this._canEnter(targetCol, targetRow, dx, dy)) {
-      if (this.wallDx !== 0 && dy < 0 && !this._wallContinuesAt(targetRow)) {
-        this._bump(); // the wall ends here - an overhang, not somewhere to climb onto
+      if (this.wallDx !== 0 && dy < 0) {
+        const wallState = this._wallState(targetRow);
+        if (wallState === "overhang") {
+          this._bump(); // curves back over the mole - a genuine barrier, not somewhere to wrap onto
+          return;
+        }
+        this._beginWalkOrClimb(targetCol, targetRow, dx, dy, distanceScale, targetTile);
+        // The wall simply stopped (the flat top of a cliff or a short wall, not an overhang) -
+        // there's nothing left to cling to, so this step lands on ordinary footing instead of
+        // continuing to "climb" a wall that isn't there anymore. Going around a corner and over
+        // a cliff like this is exactly the case that used to get conflated with an overhang and
+        // wrongly treated as a barrier.
+        if (wallState === "ended") this.wallDx = 0;
         return;
       }
       this._beginWalkOrClimb(targetCol, targetRow, dx, dy, distanceScale, targetTile);
@@ -229,24 +240,28 @@ export class Mole {
     return this._hasFloorAt(this.col, this.row);
   }
 
-  // Is the wall the mole is climbing still there at this row, and not curved into an overhang
-  // it can't cling to? Field-based: a short horizontal raycast toward the wall side, which
-  // naturally covers both "the wall just stopped" (no hit) and "the wall curved out into a
-  // ledge above" (hit, but the surface there faces down like a ceiling) - two cases tiles.js's
-  // flat SHAPE-based wall could never actually distinguish, since it only ever had straight
-  // walls to begin with.
-  _wallContinuesAt(row) {
+  // What's happening to the wall the mole is climbing, at this row: "continues" (a normal wall
+  // - keep climbing), "overhang" (curves back over the mole - a genuine barrier, "concave angles
+  // are treated as a barrier"), or "ended" (the wall simply stopped - the flat top of a cliff or
+  // a short wall, not a barrier at all, just somewhere to step onto). Field-based: a short
+  // horizontal raycast toward the wall side distinguishes "stopped" (no hit) from "curved into a
+  // ceiling" (hit, but the surface there faces down) - two cases tiles.js's flat SHAPE-based
+  // wall could never actually tell apart, since it only ever had straight walls to begin with;
+  // without a field, every non-continuation reads as "ended" (SHAPE has no way to represent a
+  // real overhang shape at all).
+  _wallState(row) {
     if (this.field) {
       const hit = raycast(this.field, this.col + 0.5, row + 0.5, this.wallDx, 0, 0.6);
-      return hit !== null && !isOverhangNormal(hit.normal);
+      if (hit === null) return "ended";
+      return isOverhangNormal(hit.normal) ? "overhang" : "continues";
     }
-    return this.map.getTile(this.col + this.wallDx, row).solid;
+    return this.map.getTile(this.col + this.wallDx, row).solid ? "continues" : "ended";
   }
 
   // First contact with a vertical wall while walking - grab on and immediately climb up one
   // step, exactly as if the player had pressed Up instead of the direction that just got
-  // blocked. Never digs; a wall too short to climb at all (blocked immediately above) just
-  // bumps instead of attaching to nothing.
+  // blocked. Never digs; only a genuine overhang right above bumps instead of attaching - a
+  // short wall/step that tops out immediately still completes as a quick climb onto it.
   _attemptAttach(dx) {
     const targetRow = this.row - 1;
     if (!this.map.inBounds(this.col, targetRow) || targetRow < this.map.skyRows) {
@@ -254,13 +269,15 @@ export class Mole {
       return;
     }
     this.wallDx = dx;
-    if (!this._wallContinuesAt(targetRow) || !this._canEnter(this.col, targetRow, 0, -1)) {
+    const wallState = this._wallState(targetRow);
+    if (wallState === "overhang" || !this._canEnter(this.col, targetRow, 0, -1)) {
       this.wallDx = 0;
       this._bump();
       return;
     }
     const targetTile = this.map.getTile(this.col, targetRow);
     this._beginWalkOrClimb(this.col, targetRow, 0, -1, 1, targetTile);
+    if (wallState === "ended") this.wallDx = 0; // a low step, not a real wall to keep climbing
   }
 
   /** True if the cell at (col,row) reads as solid - field-based when attached, else the plain

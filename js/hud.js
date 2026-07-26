@@ -23,6 +23,7 @@ export class HUD {
     this.btnRestart = document.getElementById("btn-restart");
     this.chkSound = document.getElementById("chk-sound");
     this.selControls = document.getElementById("sel-controls");
+    this.chkWireframe = document.getElementById("chk-wireframe");
 
     this.btnMole = document.getElementById("btn-mole");
     this.btnCloseMole = document.getElementById("btn-close-mole");
@@ -46,6 +47,7 @@ export class HUD {
     this.btnRestart.addEventListener("click", () => this.callbacks.restart?.());
     this.chkSound.addEventListener("change", (e) => this.callbacks.soundToggle?.(e.target.checked));
     this.selControls.addEventListener("change", (e) => this.callbacks.controlSchemeChange?.(e.target.value));
+    this.chkWireframe.addEventListener("change", (e) => this.callbacks.wireframeToggle?.(e.target.checked));
     this.btnMole.addEventListener("click", () => this.callbacks.openMole?.());
     this.btnCloseMole.addEventListener("click", () => this.callbacks.closeMole?.());
   }
