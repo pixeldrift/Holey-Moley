@@ -285,11 +285,9 @@ export class Game {
   /** Beta debug view: just the field's marching-squares tunnel outlines and the mole, no
    *  textures/decorations/creatures - lets wall/overhang geometry be inspected directly. */
   _renderWireframe(ctx, startCol, endCol, startRow, endRow, originX, originY) {
-    ctx.fillStyle = "#1a1a1a";
+    ctx.fillStyle = "#000000";
     ctx.fillRect(0, 0, this.viewW, this.viewH);
 
-    ctx.strokeStyle = "#00ff88";
-    ctx.lineWidth = 1.5;
     ctx.beginPath();
     for (let row = startRow; row <= endRow; row++) {
       for (let col = startCol; col <= endCol; col++) {
@@ -301,6 +299,15 @@ export class Game {
         }
       }
     }
+    // Phosphor-glow vectorscope look: a wide soft blur pass under a bright, crisp core line.
+    ctx.strokeStyle = "#00ff41";
+    ctx.lineWidth = 4;
+    ctx.shadowColor = "#00ff41";
+    ctx.shadowBlur = 12;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "#c6ffcf";
+    ctx.lineWidth = 1.2;
     ctx.stroke();
   }
 }
