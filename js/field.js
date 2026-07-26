@@ -18,7 +18,7 @@
 // every hard 255/0 edge crossing by a fraction of a sub-cell, on top of (and indistinguishable
 // from) the real, already-accounted-for half-sub-cell error a hard tile-seeded boundary has
 // from not varying smoothly across a cell in the first place (see _seedFromTileMap).
-const SOLID_THRESHOLD = 127.5;
+export const SOLID_THRESHOLD = 127.5;
 
 // Cell corner bits, matching the classic marching-squares convention: bit0=BL, bit1=BR,
 // bit2=TR, bit3=TL. Each case lists which of the 4 cell edges (0=N,1=E,2=S,3=W) the boundary

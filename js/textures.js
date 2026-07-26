@@ -6,6 +6,7 @@
 // drawTerrainTile call.
 
 import { TILE, SHAPE } from "./tiles.js";
+import { SOLID_THRESHOLD } from "./field.js";
 
 let sprites = null;
 let materials = null; // { grass: [img,img,img,img], sand: [...], ... }
@@ -282,23 +283,65 @@ export function drawTerrainTileFieldClipped(ctx, map, field, tile, col, row, x, 
 
   // The inset/bevel look: stroke the real boundary line (field.tileContour) while still
   // clipped to the solid region above - half the stroke's width falls outside the clip and
-  // gets thrown away, leaving only the inward-facing half, a soft shadow right at the edge
-  // that reads as the material being recessed rather than just cut off flat.
+  // gets thrown away, leaving only the inward-facing half, a shadow/highlight right at the
+  // edge that reads as the material being recessed rather than just cut off flat. Split into
+  // two passes by which way each segment faces (see _bevelSide) - a classic bevel isn't a flat
+  // dark ring, it's dark on the side facing away from the light and lit on the side facing it.
   const contour = field.tileContour(col, row);
   if (contour.length > 0) {
-    ctx.beginPath();
+    const shadowSegs = [], highlightSegs = [];
     for (const s of contour) {
-      ctx.moveTo(px + (s.x1 - col) * tileSize, py + (s.y1 - row) * tileSize);
-      ctx.lineTo(px + (s.x2 - col) * tileSize, py + (s.y2 - row) * tileSize);
+      (_bevelSide(field, s) === "highlight" ? highlightSegs : shadowSegs).push(s);
     }
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.65)";
-    ctx.lineWidth = Math.max(3, tileSize * 0.18);
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.stroke();
+
+    const strokeGroup = (segs, style, width) => {
+      if (segs.length === 0) return;
+      ctx.beginPath();
+      for (const s of segs) {
+        ctx.moveTo(px + (s.x1 - col) * tileSize, py + (s.y1 - row) * tileSize);
+        ctx.lineTo(px + (s.x2 - col) * tileSize, py + (s.y2 - row) * tileSize);
+      }
+      ctx.strokeStyle = style;
+      ctx.lineWidth = width;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.stroke();
+    };
+
+    strokeGroup(shadowSegs, "rgba(0, 0, 0, 0.8)", Math.max(3, tileSize * 0.22));
+    strokeGroup(highlightSegs, "rgba(255, 235, 200, 0.5)", Math.max(2, tileSize * 0.16));
   }
 
   ctx.restore();
+}
+
+// Light direction for the bevel, coming from the upper-left - the same default angle
+// Photoshop's own Bevel/Emboss layer style uses, so a recessed hole reads as lit from the same
+// familiar direction. The rim of a hole nearest the light (e.g. the upper-left edge of a
+// circular dig, when light comes from the upper-left) is the one that should catch the light -
+// same as the near/upper-left inner wall of a real bowl or crater lit from that direction. That
+// means the relevant normal here points AWAY from the hole (from open tunnel toward the solid
+// material it's cut into), not into it - the opposite of "which way does this rim's surface
+// face the void," which would put the highlight on the far side instead (confirmed by getting
+// this backwards on the first pass: it put the highlight diametrically opposite where it
+// should be). Found per segment by sampling the field a short distance off the line on each of
+// the two possible perpendicular sides and keeping whichever one reads as solid (not the
+// analytic normal from the case topology, which would need the full 16-case table again just
+// to get a sign right - sampling the actual field is simpler and self-consistent with whatever
+// CASE_POLYGONS/EDGE_CROSSINGS already decided).
+const BEVEL_LIGHT_DIR = { x: -Math.SQRT1_2, y: -Math.SQRT1_2 };
+
+function _bevelSide(field, seg) {
+  const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = dy / len, ny = -dx / len;
+  const midX = (seg.x1 + seg.x2) / 2, midY = (seg.y1 + seg.y2) / 2;
+  const eps = 1.5 / field.res;
+  const awayFromHole = field.sampleWorld(midX + nx * eps, midY + ny * eps) >= SOLID_THRESHOLD
+    ? { x: nx, y: ny }
+    : { x: -nx, y: -ny };
+  const dot = awayFromHole.x * BEVEL_LIGHT_DIR.x + awayFromHole.y * BEVEL_LIGHT_DIR.y;
+  return dot > 0 ? "highlight" : "shadow";
 }
 
 // ---------------------------------------------------------------------------
