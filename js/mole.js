@@ -1,5 +1,12 @@
 import { MOVE_ACTION, SHAPE, TILE } from "./tiles.js";
 import { ENERGY, FOOD_TYPES, FOOD_ID_TO_TYPE } from "./constants.js";
+import { SOLID_THRESHOLD } from "./field.js";
+import { raycast, canEnterField, findSupport, isOverhangNormal } from "./field-collision.js";
+
+// How far (tile-units) the mole's gravity search reaches for a nearby surface to stick to - see
+// _checkSupport. Matches "shouldn't fall straight down a shaft unless an edge is more than a
+// tile away."
+const GRAVITY_SEARCH_DIST = 1.0;
 
 const WALK_DURATION = 220;
 const CLIMB_DURATION = 260;
@@ -17,8 +24,14 @@ const DIAGONAL_ELBOW_SHAPES = {
 export const MAX_ENERGY = ENERGY.MAX;
 
 export class Mole {
-  constructor(tileMap, startCol, startRow) {
+  // field (see field.js/field-collision.js) is optional and defaults to null - every method
+  // below that has a field-aware path falls back to the original tiles.js SHAPE-based logic
+  // when it's absent, so nothing here changes the live game until whatever constructs a Mole
+  // actually starts passing a real, dig-synced field (see field-collision.js's module comment
+  // for why that has to happen together with the field-clipped renderer, not on its own).
+  constructor(tileMap, startCol, startRow, field = null) {
     this.map = tileMap;
+    this.field = field;
     this.col = startCol;
     this.row = startRow;
     this.px = startCol; // position in tile units (float, for smooth interpolation)
@@ -111,7 +124,7 @@ export class Mole {
 
     const targetTile = this.map.getTile(targetCol, targetRow);
 
-    if (!this.map.canEnter(targetCol, targetRow, dx, dy)) {
+    if (!this._canEnter(targetCol, targetRow, dx, dy)) {
       if (!targetTile.diggable) {
         this._bump();
         return;
@@ -123,6 +136,16 @@ export class Mole {
     }
 
     this._beginWalkOrClimb(targetCol, targetRow, dx, dy, distanceScale, targetTile);
+  }
+
+  // Field-based (see field-collision.js canEnterField) when a field is attached, generalizing
+  // to any carved shape instead of pattern-matching tiles.js's 5-case SHAPE enum - falls back to
+  // the original tile logic otherwise (see the constructor's field param doc comment).
+  _canEnter(targetCol, targetRow, dx, dy) {
+    if (this.field) {
+      return canEnterField(this.field, this.col + 0.5, this.row + 0.5, targetCol + 0.5, targetRow + 0.5);
+    }
+    return this.map.canEnter(targetCol, targetRow, dx, dy);
   }
 
   // Not digging: walk/climb along whatever surface already exists, never carving new tunnel.
@@ -162,7 +185,7 @@ export class Mole {
     const distanceScale = isDiagonal ? Math.SQRT2 : 1;
     const targetTile = this.map.getTile(targetCol, targetRow);
 
-    if (this.map.canEnter(targetCol, targetRow, dx, dy)) {
+    if (this._canEnter(targetCol, targetRow, dx, dy)) {
       if (this.wallDx !== 0 && dy < 0 && !this._wallContinuesAt(targetRow)) {
         this._bump(); // the wall ends here - an overhang, not somewhere to climb onto
         return;
@@ -184,13 +207,33 @@ export class Mole {
 
   // The grass surface is ground by definition (see TILE.SURFACE) even though it isn't a solid
   // tile itself - standing on it never needs a solid tile underneath, same as the starting
-  // burrow carved directly beneath it (see TileMap._carveStartingBurrow).
-  _hasFloorBelow() {
-    if (this.map.getTile(this.col, this.row) === TILE.SURFACE) return true;
-    return this.map.getTile(this.col, this.row + 1).solid && this.map.isEdgeSolid(this.col, this.row + 1, 0, 1);
+  // burrow carved directly beneath it (see TileMap._carveStartingBurrow). Field-based when a
+  // field is attached: a short downward raycast from the cell's own center, rejecting an
+  // overhang (the underside of a ledge doesn't count as "floor reached").
+  _hasFloorAt(col, row) {
+    if (this.map.getTile(col, row) === TILE.SURFACE) return true;
+    if (this.field) {
+      const hit = raycast(this.field, col + 0.5, row + 0.5, 0, 1, 0.6);
+      return hit !== null && !isOverhangNormal(hit.normal);
+    }
+    return this.map.getTile(col, row + 1).solid && this.map.isEdgeSolid(col, row + 1, 0, 1);
   }
 
+  _hasFloorBelow() {
+    return this._hasFloorAt(this.col, this.row);
+  }
+
+  // Is the wall the mole is climbing still there at this row, and not curved into an overhang
+  // it can't cling to? Field-based: a short horizontal raycast toward the wall side, which
+  // naturally covers both "the wall just stopped" (no hit) and "the wall curved out into a
+  // ledge above" (hit, but the surface there faces down like a ceiling) - two cases tiles.js's
+  // flat SHAPE-based wall could never actually distinguish, since it only ever had straight
+  // walls to begin with.
   _wallContinuesAt(row) {
+    if (this.field) {
+      const hit = raycast(this.field, this.col + 0.5, row + 0.5, this.wallDx, 0, 0.6);
+      return hit !== null && !isOverhangNormal(hit.normal);
+    }
     return this.map.getTile(this.col + this.wallDx, row).solid;
   }
 
@@ -205,13 +248,20 @@ export class Mole {
       return;
     }
     this.wallDx = dx;
-    if (!this._wallContinuesAt(targetRow) || !this.map.canEnter(this.col, targetRow, 0, -1)) {
+    if (!this._wallContinuesAt(targetRow) || !this._canEnter(this.col, targetRow, 0, -1)) {
       this.wallDx = 0;
       this._bump();
       return;
     }
     const targetTile = this.map.getTile(this.col, targetRow);
     this._beginWalkOrClimb(this.col, targetRow, 0, -1, 1, targetTile);
+  }
+
+  /** True if the cell at (col,row) reads as solid - field-based when attached, else the plain
+   *  tile flag. Used for the narrow-shaft "opposite wall" checks below. */
+  _isSolidCell(col, row) {
+    if (this.field) return this.field.sampleWorld(col + 0.5, row + 0.5) >= SOLID_THRESHOLD;
+    return this.map.getTile(col, row).solid;
   }
 
   // Letting go of the currently-attached wall (pressed away from it) - lands on solid ground
@@ -221,14 +271,14 @@ export class Mole {
     const awayDx = -this.wallDx;
     const targetCol = this.col + awayDx;
     if (!this.map.inBounds(targetCol, this.row)) return;
-    if (!this.map.canEnter(targetCol, this.row, awayDx, 0)) {
+    if (!this._canEnter(targetCol, this.row, awayDx, 0)) {
       this._bump(); // still boxed in on that side - stay put, still attached
       return;
     }
 
     const targetTile = this.map.getTile(targetCol, this.row);
-    const hasFloor = this.map.getTile(targetCol, this.row + 1).solid && this.map.isEdgeSolid(targetCol, this.row + 1, 0, 1);
-    const hasOppositeWall = !hasFloor && this.map.getTile(targetCol + awayDx, this.row).solid;
+    const hasFloor = this._hasFloorAt(targetCol, this.row);
+    const hasOppositeWall = !hasFloor && this._isSolidCell(targetCol + awayDx, this.row);
 
     this._beginWalkOrClimb(targetCol, this.row, awayDx, 0, 1, targetTile);
     if (hasFloor) this.wallDx = 0;
@@ -318,7 +368,7 @@ export class Mole {
     // requirement of its own (that's how a downward or diagonal dig works at all), so digging
     // sideways into a cavity, or out from under solid ground some other way, can leave the mole
     // resting over open air. wallDx != 0 is exempt - clinging to a wall never needs a floor.
-    if (this.wallDx === 0 && !this._hasFloorBelow()) {
+    if (this.wallDx === 0 && !this._checkSupport()) {
       this._beginFall();
       return;
     }
@@ -328,6 +378,24 @@ export class Mole {
     if (this.state !== "eat") {
       this.state = "idle";
     }
+  }
+
+  // Gravity's "stick to the closest surface" rule (see field-collision.js findSupport) - not
+  // just what's directly underfoot, so the mole doesn't free-fall down the middle of a shaft
+  // it's close enough to lean against a wall in instead ("shouldn't fall straight down a shaft
+  // unless an edge is more than a tile away"). A wall found closer than any floor auto-attaches
+  // to it (same wallDx state a deliberate player-driven attach uses - see _attemptAttach)
+  // instead of just reporting "supported" and leaving the mole floating unattached next to it.
+  // Without a field this degrades to the plain floor-only check, same as before.
+  _checkSupport() {
+    if (!this.field) return this._hasFloorBelow();
+    if (this.map.getTile(this.col, this.row) === TILE.SURFACE) return true;
+    const support = findSupport(this.field, this.col + 0.5, this.row + 0.5, GRAVITY_SEARCH_DIST);
+    if (!support) return false;
+    if (Math.abs(support.normal.x) > Math.abs(support.normal.y)) {
+      this.wallDx = support.x > this.col + 0.5 ? 1 : -1;
+    }
+    return true;
   }
 
   _updateSleep(dt) {
