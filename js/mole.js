@@ -14,34 +14,36 @@ const GRAVITY_SEARCH_DIST = 1.0;
 // each step's endpoint alone wouldn't reliably touch the previous one on the diagonal case.
 const DIG_RADIUS = 0.55;
 
+// How far ahead of the mole's own center tryContinuousDig checks for material to dig into - has
+// to be strictly more than DIG_RADIUS. Each step's carve clears a full DIG_RADIUS circle around
+// the mole's new position, so a lookahead of exactly DIG_RADIUS lands right back on the edge of
+// what was just cleared - the very next tick reads that spot as "already open" and stalls
+// (confirmed: caused digging to advance on roughly 1 in 20 frames instead of every frame). The
+// margin pushes the check past the freshly-cleared circle into genuinely untouched material.
+const DIG_LOOKAHEAD = DIG_RADIUS + 0.15;
+
 const WALK_DURATION = 220;
 const CLIMB_DURATION = 260;
 const FALL_SPEED_MULTIPLIER = 1.5; // falling off a wall drops faster than climbing it
 
-// Free-carve (see Mole.freeCarve): a continuous, arbitrary-angle nibble that runs alongside the
-// discrete per-tile dig action whenever the dig control is held, following the raw (un-snapped-
-// to-8-directions) aim vector instead of the grid. Two things this buys that the grid-locked
-// capsule dig alone can't: tunnel edges that round off smoothly in whatever direction the player
-// actually drags instead of only ever bending at 45/90 degrees, and the ability to clear a small
-// stray solid island left behind between two nearby-but-not-quite-touching digs, by just steering
-// straight at it - something the grid-hop system can never reach if no adjacent tile center lines
-// up with it. Deliberately unscored and small-radius/short-reach relative to the real dig (see
-// tiles.js's digScore) - it costs energy like ordinary digging but never grants stars, so it stays
-// a precision/cleanup tool layered on top of the real dig loop rather than a way to skip it.
-const CARVE_REACH = 0.42; // tile-units ahead of the mole's own center, along the aim direction
-const CARVE_RADIUS = 0.35; // smaller than DIG_RADIUS - a nibble, not a full bite
-const CARVE_INTERVAL_MS = 60; // throttle so this stays a fixed-rate tick, not a per-frame spam
-const CARVE_ENERGY_PER_SEC = 3; // only charged on ticks that actually remove material
+// Continuous digging (see Mole.tryContinuousDig): while the dig control is held with a direction
+// pressed, the mole moves and carves the field itself along the raw (un-snapped-to-8-directions)
+// aim vector, at whatever material is directly ahead's normal dig pace - instead of only ever
+// hopping one whole tile at a time in one of 8 directions. This is what actually rounds off the
+// mole's own path in whatever direction is held, not just a cosmetic extra. It falls back to
+// nothing (letting the ordinary discrete walk/climb/bump system handle it) the instant the path
+// ahead is already open or blocked by rock, so gravity/wall-climbing on existing tunnel is
+// completely unchanged - only "there's diggable material in the way" gets this treatment.
 // A tile only flips to TUNNEL (see tiles.js) once the field says it's genuinely mostly cleared -
-// a nibble that merely grazes a fresh tile's corner shouldn't tell the legacy tile grid (and
-// anything reading it, like creatures.js's collision) that the whole tile is open.
-const CARVE_TUNNEL_FRACTION = 0.15;
+// grazing a fresh tile's corner in passing shouldn't tell the legacy tile grid (and anything
+// reading it, like creatures.js's collision) that the whole tile is open.
+const TUNNEL_FRACTION_THRESHOLD = 0.15;
 
 // Burrow digging (see Mole.holdBurrow): holding the dig control with no direction pressed grows
-// a round chamber centered on the mole instead of nibbling a fixed small spot - the "dig a round
-// room like a real burrow" action, as opposed to freeCarve's precision cleanup nibble. Unlike
-// freeCarve this IS scored (real digging, not a polish tool), at a flat per-area rate rather than
-// tracking the exact material at every point the growing circle happens to cover.
+// a round chamber centered on the mole - the "dig a round room to stop and rest in" action, as
+// opposed to tryContinuousDig's moving-forward carve. Scored the same way (real digging, not a
+// polish tool), at a flat per-area rate rather than tracking the exact material at every point
+// the growing circle happens to cover.
 const BURROW_MIN_RADIUS = 0.6; // roughly one normal dig capsule's reach - no jarring pop-in
 const BURROW_MAX_RADIUS = 1.9; // a proper round room, capped so holding dig forever isn't free
 const BURROW_GROWTH_PER_SEC = 0.35; // tile-units of radius per second held
@@ -93,7 +95,8 @@ export class Mole {
     this.wallDx = 0;
     this.falling = false;
     this._pendingFall = false;
-    this._carveAccum = 0; // throttle timer for freeCarve
+    this._digScoreCarry = 0; // fractional score between whole-star awards - see tryContinuousDig
+    this._continuousDigActive = false; // set for one frame by tryContinuousDig - see update()
     this._burrowHeld = 0; // ms the dig control has been held with no direction - see holdBurrow
     this._burrowRadius = 0; // radius already carved this hold, so growth only adds the new ring
     this._burrowScoreCarry = 0; // fractional score between whole-star awards - see holdBurrow
@@ -149,43 +152,74 @@ export class Mole {
     }
   }
 
-  // Continuous, arbitrary-angle nibble - see the CARVE_* constants' module comment. Runs every
-  // frame the dig control is held (from game.js's loop, independent of requestMove/isBusy - it
-  // never moves the mole or advances the action state machine, only sculpts the field a little
-  // near it), driven by the raw un-snapped aim vector (InputController.getAimVector) so it can
-  // reach any angle, not just the 8 grid directions. aimX/aimY may be a zero vector (dig held,
-  // no direction pressed) - that's "nibble right where I'm standing," exactly what's needed to
-  // clear a stray leftover fragment the player has just walked up next to.
-  freeCarve(dt, aimX, aimY) {
-    if (!this.field || this.state === "sleep" || this.falling) return;
-    this._carveAccum += dt;
-    if (this._carveAccum < CARVE_INTERVAL_MS) return;
-    const elapsed = this._carveAccum;
-    this._carveAccum = 0;
-
+  // Continuous, arbitrary-angle digging - see the module comment above TUNNEL_FRACTION_THRESHOLD.
+  // Called every frame from game.js's loop whenever the dig control is held with a direction
+  // (raw, un-snapped aim vector from InputController.getAimVector). Returns true the moment it
+  // actually takes over the mole's movement for this frame (there was diggable material directly
+  // ahead, or rock got bumped into), false the instant there's nothing for it to do - the caller
+  // falls back to the ordinary discrete requestMove whenever this returns false, so walking and
+  // wall-climbing on already-open tunnel are completely untouched by this.
+  tryContinuousDig(dt, aimX, aimY) {
+    if (!this.field || this.state === "sleep" || this.falling || this.isBusy) return false;
     const mag = Math.hypot(aimX, aimY);
-    const nx = mag > 0.01 ? aimX / mag : 0;
-    const ny = mag > 0.01 ? aimY / mag : 0;
-    const reach = mag > 0.01 ? CARVE_REACH : 0;
-    const cx = this.px + nx * reach;
-    const cy = this.py + ny * reach;
+    if (mag < 0.01) return false;
+    const nx = aimX / mag, ny = aimY / mag;
 
-    const col = Math.floor(cx), row = Math.floor(cy);
-    if (!this.map.inBounds(col, row) || row < this.map.skyRows) return;
-    if (this.map.getTile(col, row) === TILE.ROCK) return; // never eat through rock
-    if (this.field.sampleWorld(cx, cy) < SOLID_THRESHOLD) return; // nothing there to remove
+    const aheadX = this.px + nx * DIG_LOOKAHEAD, aheadY = this.py + ny * DIG_LOOKAHEAD;
+    const aheadCol = Math.floor(aheadX), aheadRow = Math.floor(aheadY);
+    if (!this.map.inBounds(aheadCol, aheadRow) || aheadRow < this.map.skyRows) return false;
+    if (this.field.sampleWorld(aheadX, aheadY) < SOLID_THRESHOLD) return false; // already open - not this system's job
 
-    this.field.subtractCircle(cx, cy, CARVE_RADIUS);
-    if (this.map.getTile(col, row) !== TILE.TUNNEL && this.field.tileSolidFraction(col, row) < CARVE_TUNNEL_FRACTION) {
-      this.map.digOut(col, row);
+    const aheadTile = this.map.getTile(aheadCol, aheadRow);
+    if (!aheadTile.diggable) {
+      this._bump(); // rock - consume the input so the caller doesn't also try a grid-step here
+      return true;
     }
-    this._spendEnergy(CARVE_ENERGY_PER_SEC * elapsed / 1000);
+
+    this.wallDx = 0; // digging always lets go of a wall, same as the discrete system
+    if (nx > 0.01) this.facing = "right";
+    else if (nx < -0.01) this.facing = "left";
+    this.state = "dig";
+    this._continuousDigActive = true; // tells update() to skip its idle/gravity fallthrough this frame
+
+    // Same tiles.js digDuration/speedFactor pacing the discrete dig uses, expressed as a rate
+    // instead of a fixed per-tile duration - moving any distance at any angle costs exactly the
+    // same total time/energy/score per unit of material removed as before, just continuously.
+    const speed = 1000 / (aheadTile.digDuration * this.speedFactor); // tiles/sec
+    const dist = (speed * dt) / 1000;
+    const newX = this.px + nx * dist, newY = this.py + ny * dist;
+
+    this._digFieldWorld(this.px, this.py, newX, newY);
+    this.px = newX;
+    this.py = newY;
+    this.col = Math.round(this.px);
+    this.row = Math.round(this.py);
+
+    // Same tiny-fractional-amount-per-tick trap holdBurrow already has to guard against - each
+    // frame's sliver of distance is almost always well under 1 star, so round the running total
+    // instead of each individual tick.
+    this._digScoreCarry += dist * aheadTile.digScore;
+    const wholeScore = Math.floor(this._digScoreCarry);
+    if (wholeScore > 0) {
+      this._addScore(wholeScore);
+      this._digScoreCarry -= wholeScore;
+    }
+    this._spendEnergy(dist * aheadTile.digEnergyCost * this.strengthFactor);
+
+    if (this.map.getTile(aheadCol, aheadRow) !== TILE.TUNNEL && this.field.tileSolidFraction(aheadCol, aheadRow) < TUNNEL_FRACTION_THRESHOLD) {
+      this.map.digOut(aheadCol, aheadRow);
+      const foodId = this.map.consumeFood(aheadCol, aheadRow);
+      const typeKey = FOOD_ID_TO_TYPE[foodId];
+      if (typeKey) this._applyFood(typeKey);
+    }
+
+    return true;
   }
 
   // Holding the dig control with no direction pressed (see game.js's loop - it calls this
-  // instead of freeCarve exactly when the aim vector is zero) grows a round chamber centered on
-  // the mole, the widening-ring at a time, up to BURROW_MAX_RADIUS - "dig a round burrow" as its
-  // own distinct action rather than freeCarve's tiny fixed nibble. Requires standing still
+  // instead of tryContinuousDig exactly when the aim vector is zero) grows a round chamber
+  // centered on the mole, a widening ring at a time, up to BURROW_MAX_RADIUS - "dig a round
+  // burrow" as its own distinct action rather than moving forward. Requires standing still
   // (isBusy) since there's no direction to walk into; resetBurrow() must be called by the caller
   // the instant that's no longer true (direction pressed, dig released) so the next hold starts
   // over instead of resuming a stale radius.
@@ -209,7 +243,7 @@ export class Mole {
     const rowMax = Math.min(this.map.height - 1, Math.floor(this.py + radius));
     for (let row = rowMin; row <= rowMax; row++) {
       for (let col = colMin; col <= colMax; col++) {
-        if (this.map.getTile(col, row) !== TILE.TUNNEL && this.field.tileSolidFraction(col, row) < CARVE_TUNNEL_FRACTION) {
+        if (this.map.getTile(col, row) !== TILE.TUNNEL && this.field.tileSolidFraction(col, row) < TUNNEL_FRACTION_THRESHOLD) {
           this.map.digOut(col, row);
         }
       }
@@ -506,6 +540,16 @@ export class Mole {
       return;
     }
 
+    // tryContinuousDig already fully owns px/py/state for this frame (moving and carving along
+    // whatever raw angle is held) - the gravity/idle fallthrough below would otherwise stomp that
+    // fractional position back to the rounded col/row every single frame. Gravity resumes
+    // checking the very next frame continuous digging isn't active, same as how the discrete dig
+    // action above already defers gravity until it completes.
+    if (this._continuousDigActive) {
+      this._continuousDigActive = false;
+      return;
+    }
+
     // Gravity applies continuously whenever the mole is at rest, not just right after letting
     // go of a wall (see _releaseWall) - digging is free-form in all 8 directions with no floor
     // requirement of its own (that's how a downward or diagonal dig works at all), so digging
@@ -627,10 +671,14 @@ export class Mole {
   // step, since adjacent cell centers are sqrt(2) tile-units apart on the diagonal but the two
   // circles would only be 2*DIG_RADIUS apart. This is what replaces carveDiagonal/
   // _carveDiagonalElbows entirely for shape purposes - no separate elbow-notching step needed,
-  // the capsule's own geometry already traces a smooth line between the two cells.
+  // the capsule's own geometry already traces a smooth line between the two cells. A thin
+  // tile-index wrapper around _digFieldWorld, which tryContinuousDig also uses directly with
+  // real (non-tile-center) world positions for its own, much shorter, per-frame capsules.
   _digField(fromCol, fromRow, toCol, toRow) {
-    const fromX = fromCol + 0.5, fromY = fromRow + 0.5;
-    const toX = toCol + 0.5, toY = toRow + 0.5;
+    this._digFieldWorld(fromCol + 0.5, fromRow + 0.5, toCol + 0.5, toRow + 0.5);
+  }
+
+  _digFieldWorld(fromX, fromY, toX, toY) {
     const dist = Math.hypot(toX - fromX, toY - fromY);
     const steps = Math.max(1, Math.ceil(dist / (DIG_RADIUS * 0.6)));
     for (let i = 0; i <= steps; i++) {

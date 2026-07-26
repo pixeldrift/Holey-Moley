@@ -151,7 +151,7 @@ export class InputController {
   /** Same idea as getDirection(), but the raw (not-snapped-to-8-ways) unit vector - lets digging
    *  follow the actual angle a finger/mouse drags at instead of only ever bending at 45 degrees.
    *  Keyboard has no continuous angle to give, so it still only ever reports one of 8 directions
-   *  here; a zero vector (nothing held) is a valid, meaningful result - see Mole.freeCarve. */
+   *  here; a zero vector (nothing held) is a valid, meaningful result - see Mole.holdBurrow. */
   getAimVector() {
     if (this.pointerRawDir.dx !== 0 || this.pointerRawDir.dy !== 0) return this.pointerRawDir;
     if (this.keyDir.dx !== 0 || this.keyDir.dy !== 0) {
