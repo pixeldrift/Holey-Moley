@@ -310,27 +310,28 @@ export function drawTerrainTileFieldClipped(ctx, map, field, tile, col, row, x, 
       ctx.filter = "none";
     };
 
-    const blur = tileSize * 0.05;
-    strokeGroup(shadowSegs, "rgba(0, 0, 0, 0.8)", Math.max(3, tileSize * 0.22), blur);
-    strokeGroup(highlightSegs, "rgba(255, 235, 200, 0.18)", Math.max(2, tileSize * 0.16), blur);
+    strokeGroup(shadowSegs, "rgba(0, 0, 0, 0.8)", Math.max(3, tileSize * 0.22), tileSize * 0.12);
+    strokeGroup(highlightSegs, "rgba(255, 235, 200, 0.045)", Math.max(1.5, tileSize * 0.08), tileSize * 0.07);
   }
 
   ctx.restore();
 }
 
 // Light direction for the bevel, coming from the upper-left - the same default angle
-// Photoshop's own Bevel/Emboss layer style uses, so a recessed hole reads as lit from the same
-// familiar direction. The rim of a hole nearest the light (e.g. the upper-left edge of a
-// circular dig, when light comes from the upper-left) is the one that should catch the light -
-// same as the near/upper-left inner wall of a real bowl or crater lit from that direction. That
-// means the relevant normal here points AWAY from the hole (from open tunnel toward the solid
-// material it's cut into), not into it - the opposite of "which way does this rim's surface
-// face the void," which would put the highlight on the far side instead (confirmed by getting
-// this backwards on the first pass: it put the highlight diametrically opposite where it
-// should be). Found per segment by sampling the field a short distance off the line on each of
-// the two possible perpendicular sides and keeping whichever one reads as solid (not the
-// analytic normal from the case topology, which would need the full 16-case table again just
-// to get a sign right - sampling the actual field is simpler and self-consistent with whatever
+// Photoshop's own Bevel/Emboss layer style uses. A RECESSED hole reads correctly lit from a
+// given direction the opposite way a raised bump would: this is the well-known crater/moon
+// illusion (a real crater photographed with the sun to one side is bright on the rim FAR from
+// the sun and dark on the rim NEAR it, because the near wall's visible inner surface tilts away
+// from the light while the far wall's tilts toward it - it's also exactly why flipping a photo
+// of a crater upside-down makes it look like a dome, and vice versa). So for light coming from
+// the upper-left, the far (lower-right) rim of a dig is the lit one and the near (upper-left)
+// rim is the shadowed one - confirmed by direct feedback after the first version put it the
+// other way (which is the correct convention for an embossed/raised bump, not a dug-out hole).
+// A segment's relevant direction here is the one pointing INTO the hole (from the solid material
+// toward the open tunnel) - found by sampling the field a short distance off the line on each of
+// the two possible perpendicular sides and keeping whichever one reads as open (not the analytic
+// normal from the case topology, which would need the full 16-case table again just to get a
+// sign right - sampling the actual field is simpler and self-consistent with whatever
 // CASE_POLYGONS/EDGE_CROSSINGS already decided).
 const BEVEL_LIGHT_DIR = { x: -Math.SQRT1_2, y: -Math.SQRT1_2 };
 
@@ -340,10 +341,10 @@ function _bevelSide(field, seg) {
   const nx = dy / len, ny = -dx / len;
   const midX = (seg.x1 + seg.x2) / 2, midY = (seg.y1 + seg.y2) / 2;
   const eps = 1.5 / field.res;
-  const awayFromHole = field.sampleWorld(midX + nx * eps, midY + ny * eps) >= SOLID_THRESHOLD
+  const intoHole = field.sampleWorld(midX + nx * eps, midY + ny * eps) < SOLID_THRESHOLD
     ? { x: nx, y: ny }
     : { x: -nx, y: -ny };
-  const dot = awayFromHole.x * BEVEL_LIGHT_DIR.x + awayFromHole.y * BEVEL_LIGHT_DIR.y;
+  const dot = intoHole.x * BEVEL_LIGHT_DIR.x + intoHole.y * BEVEL_LIGHT_DIR.y;
   return dot > 0 ? "highlight" : "shadow";
 }
 
