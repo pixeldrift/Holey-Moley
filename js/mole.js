@@ -578,6 +578,15 @@ function _wallAngle(wallDx, wallDy) {
   return Math.atan2(-wallDx, wallDy);
 }
 
+// Same idea as _wallAngle but driven by a real field surface normal instead of a fixed axis -
+// lets the sprite's feet track a wall that curves (a round tunnel, a corner being climbed
+// around) instead of snapping to a flat +-90 degrees. field-collision.js's normal convention
+// points AWAY from solid material, INTO open space, so the feet direction (toward the surface)
+// is -normal: fx,fy = -nx,-ny, and theta = atan2(-fx,fy) = atan2(nx,-ny).
+function _surfaceAngle(nx, ny) {
+  return Math.atan2(nx, -ny);
+}
+
 // Wall-climbing (this.wallDx != 0, clinging to a side wall - see _requestSurfaceMove) always
 // wins: it's an explicit, intentional state, not something to infer from the tile underfoot,
 // and needs to stay correct even at rest (standing still partway up a shaft), not just mid-
@@ -590,7 +599,13 @@ function _wallAngle(wallDx, wallDy) {
 // wall reference at all (burrowing straight up/down through open dirt, not clinging to any
 // side) has no surface to match, so it keeps the older, simpler up/down tilt instead.
 function _moleRenderAngle(mole, solidDir) {
-  if (mole.wallDx !== 0) return _wallAngle(mole.wallDx, 0);
+  if (mole.wallDx !== 0) {
+    if (mole.field) {
+      const hit = raycast(mole.field, mole.col + 0.5, mole.py + 0.5, mole.wallDx, 0, 0.6);
+      if (hit) return _surfaceAngle(hit.normal.x, hit.normal.y);
+    }
+    return _wallAngle(mole.wallDx, 0);
+  }
   if (solidDir) return _wallAngle(solidDir.dx, solidDir.dy);
   if (mole.actionType === MOVE_ACTION.CLIMB && mole.actionTarget) {
     const goingUp = mole.actionTarget.row < mole.row;
