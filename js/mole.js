@@ -1,4 +1,4 @@
-import { MOVE_ACTION, SHAPE } from "./tiles.js";
+import { MOVE_ACTION, SHAPE, TILE } from "./tiles.js";
 import { ENERGY, FOOD_TYPES, FOOD_ID_TO_TYPE } from "./constants.js";
 
 const WALK_DURATION = 220;
@@ -182,7 +182,11 @@ export class Mole {
     this._bump();
   }
 
+  // The grass surface is ground by definition (see TILE.SURFACE) even though it isn't a solid
+  // tile itself - standing on it never needs a solid tile underneath, same as the starting
+  // burrow carved directly beneath it (see TileMap._carveStartingBurrow).
   _hasFloorBelow() {
+    if (this.map.getTile(this.col, this.row) === TILE.SURFACE) return true;
     return this.map.getTile(this.col, this.row + 1).solid && this.map.isEdgeSolid(this.col, this.row + 1, 0, 1);
   }
 
@@ -306,6 +310,16 @@ export class Mole {
       if (t >= 1) {
         this._completeAction();
       }
+      return;
+    }
+
+    // Gravity applies continuously whenever the mole is at rest, not just right after letting
+    // go of a wall (see _releaseWall) - digging is free-form in all 8 directions with no floor
+    // requirement of its own (that's how a downward or diagonal dig works at all), so digging
+    // sideways into a cavity, or out from under solid ground some other way, can leave the mole
+    // resting over open air. wallDx != 0 is exempt - clinging to a wall never needs a floor.
+    if (this.wallDx === 0 && !this._hasFloorBelow()) {
+      this._beginFall();
       return;
     }
 
