@@ -294,22 +294,25 @@ export function drawTerrainTileFieldClipped(ctx, map, field, tile, col, row, x, 
       (_bevelSide(field, s) === "highlight" ? highlightSegs : shadowSegs).push(s);
     }
 
-    const strokeGroup = (segs, style, width) => {
+    const strokeGroup = (segs, style, width, blurPx) => {
       if (segs.length === 0) return;
       ctx.beginPath();
       for (const s of segs) {
         ctx.moveTo(px + (s.x1 - col) * tileSize, py + (s.y1 - row) * tileSize);
         ctx.lineTo(px + (s.x2 - col) * tileSize, py + (s.y2 - row) * tileSize);
       }
+      ctx.filter = blurPx ? `blur(${blurPx}px)` : "none";
       ctx.strokeStyle = style;
       ctx.lineWidth = width;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.stroke();
+      ctx.filter = "none";
     };
 
-    strokeGroup(shadowSegs, "rgba(0, 0, 0, 0.8)", Math.max(3, tileSize * 0.22));
-    strokeGroup(highlightSegs, "rgba(255, 235, 200, 0.5)", Math.max(2, tileSize * 0.16));
+    const blur = tileSize * 0.05;
+    strokeGroup(shadowSegs, "rgba(0, 0, 0, 0.8)", Math.max(3, tileSize * 0.22), blur);
+    strokeGroup(highlightSegs, "rgba(255, 235, 200, 0.18)", Math.max(2, tileSize * 0.16), blur);
   }
 
   ctx.restore();
