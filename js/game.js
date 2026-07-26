@@ -179,20 +179,13 @@ export class Game {
 
     if (digging) {
       const aim = this.input.getAimVector();
-      if (aim.dx === 0 && aim.dy === 0) {
-        // Dig held, no direction: grow a round burrow in place instead of moving/carving.
-        this.mole.holdBurrow(dt);
-        return;
-      }
-      this.mole.resetBurrow();
       // Arbitrary-angle digging: if there's diggable material directly ahead, this moves and
       // carves the mole itself along the raw drag/key angle - not snapped to the 8 grid
       // directions - and we're done for this frame. It only returns false when there's nothing
-      // for it to do (path already open, or rock just got bumped), in which case fall through to
-      // the ordinary discrete system below exactly as if this never ran.
+      // for it to do (no direction pressed, path already open, or rock just got bumped), in
+      // which case fall through to the ordinary discrete system below exactly as if this never
+      // ran - dig held with no direction is simply a no-op, not an automatic action of its own.
       if (this.mole.tryContinuousDig(dt, aim.dx, aim.dy)) return;
-    } else {
-      this.mole.resetBurrow();
     }
 
     const dir = this.input.getDirection();
