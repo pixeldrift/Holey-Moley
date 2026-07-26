@@ -158,6 +158,10 @@ export class Game {
 
     if (this.state === "playing") {
       this._handleContinuousInput();
+      if (this.input.isDigging()) {
+        const aim = this.input.getAimVector();
+        this.mole.freeCarve(dt, aim.dx, aim.dy);
+      }
       this.mole.update(dt);
       this.creatures.update(dt, this.mole);
       this._updateCamera(dt);

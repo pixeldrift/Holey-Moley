@@ -18,6 +18,25 @@ const WALK_DURATION = 220;
 const CLIMB_DURATION = 260;
 const FALL_SPEED_MULTIPLIER = 1.5; // falling off a wall drops faster than climbing it
 
+// Free-carve (see Mole.freeCarve): a continuous, arbitrary-angle nibble that runs alongside the
+// discrete per-tile dig action whenever the dig control is held, following the raw (un-snapped-
+// to-8-directions) aim vector instead of the grid. Two things this buys that the grid-locked
+// capsule dig alone can't: tunnel edges that round off smoothly in whatever direction the player
+// actually drags instead of only ever bending at 45/90 degrees, and the ability to clear a small
+// stray solid island left behind between two nearby-but-not-quite-touching digs, by just steering
+// straight at it - something the grid-hop system can never reach if no adjacent tile center lines
+// up with it. Deliberately unscored and small-radius/short-reach relative to the real dig (see
+// tiles.js's digScore) - it costs energy like ordinary digging but never grants stars, so it stays
+// a precision/cleanup tool layered on top of the real dig loop rather than a way to skip it.
+const CARVE_REACH = 0.42; // tile-units ahead of the mole's own center, along the aim direction
+const CARVE_RADIUS = 0.35; // smaller than DIG_RADIUS - a nibble, not a full bite
+const CARVE_INTERVAL_MS = 60; // throttle so this stays a fixed-rate tick, not a per-frame spam
+const CARVE_ENERGY_PER_SEC = 3; // only charged on ticks that actually remove material
+// A tile only flips to TUNNEL (see tiles.js) once the field says it's genuinely mostly cleared -
+// a nibble that merely grazes a fresh tile's corner shouldn't tell the legacy tile grid (and
+// anything reading it, like creatures.js's collision) that the whole tile is open.
+const CARVE_TUNNEL_FRACTION = 0.15;
+
 // Which corner stays solid on each of the two "elbow" tiles (the orthogonal neighbors
 // flanking a diagonal step), keyed by the move's [dx,dy]. See tiles.js SHAPE.
 const DIAGONAL_ELBOW_SHAPES = {
@@ -62,6 +81,7 @@ export class Mole {
     this.wallDx = 0;
     this.falling = false;
     this._pendingFall = false;
+    this._carveAccum = 0; // throttle timer for freeCarve
     this.onScoreChange = null;
     this.onEnergyChange = null;
     this.onStarsEarned = null;
@@ -112,6 +132,39 @@ export class Mole {
     } else {
       this._requestSurfaceMove(dx, dy);
     }
+  }
+
+  // Continuous, arbitrary-angle nibble - see the CARVE_* constants' module comment. Runs every
+  // frame the dig control is held (from game.js's loop, independent of requestMove/isBusy - it
+  // never moves the mole or advances the action state machine, only sculpts the field a little
+  // near it), driven by the raw un-snapped aim vector (InputController.getAimVector) so it can
+  // reach any angle, not just the 8 grid directions. aimX/aimY may be a zero vector (dig held,
+  // no direction pressed) - that's "nibble right where I'm standing," exactly what's needed to
+  // clear a stray leftover fragment the player has just walked up next to.
+  freeCarve(dt, aimX, aimY) {
+    if (!this.field || this.state === "sleep" || this.falling) return;
+    this._carveAccum += dt;
+    if (this._carveAccum < CARVE_INTERVAL_MS) return;
+    const elapsed = this._carveAccum;
+    this._carveAccum = 0;
+
+    const mag = Math.hypot(aimX, aimY);
+    const nx = mag > 0.01 ? aimX / mag : 0;
+    const ny = mag > 0.01 ? aimY / mag : 0;
+    const reach = mag > 0.01 ? CARVE_REACH : 0;
+    const cx = this.px + nx * reach;
+    const cy = this.py + ny * reach;
+
+    const col = Math.floor(cx), row = Math.floor(cy);
+    if (!this.map.inBounds(col, row) || row < this.map.skyRows) return;
+    if (this.map.getTile(col, row) === TILE.ROCK) return; // never eat through rock
+    if (this.field.sampleWorld(cx, cy) < SOLID_THRESHOLD) return; // nothing there to remove
+
+    this.field.subtractCircle(cx, cy, CARVE_RADIUS);
+    if (this.map.getTile(col, row) !== TILE.TUNNEL && this.field.tileSolidFraction(col, row) < CARVE_TUNNEL_FRACTION) {
+      this.map.digOut(col, row);
+    }
+    this._spendEnergy(CARVE_ENERGY_PER_SEC * elapsed / 1000);
   }
 
   _requestDiggingMove(dx, dy) {

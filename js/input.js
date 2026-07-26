@@ -25,6 +25,7 @@ export class InputController {
     this.keyDir = { dx: 0, dy: 0 };
     this._activeKeys = new Set();
     this.pointerDir = { dx: 0, dy: 0 };
+    this.pointerRawDir = { dx: 0, dy: 0 }; // un-snapped drag vector - see getAimVector
     this._dragging = false;
     this._pointerId = null;
     this._startX = 0;
@@ -107,6 +108,7 @@ export class InputController {
     this._startY = e.clientY;
     this._dragging = false;
     this.pointerDir = { dx: 0, dy: 0 };
+    this.pointerRawDir = { dx: 0, dy: 0 };
   }
 
   _onPointerMove(e) {
@@ -117,6 +119,7 @@ export class InputController {
     if (dist > DRAG_THRESHOLD) {
       this._dragging = true;
       this.pointerDir = octantFromVector(dx, dy);
+      this.pointerRawDir = { dx: dx / dist, dy: dy / dist };
     }
   }
 
@@ -135,12 +138,26 @@ export class InputController {
     this._dragging = false;
     this._pointerId = null;
     this.pointerDir = { dx: 0, dy: 0 };
+    this.pointerRawDir = { dx: 0, dy: 0 };
   }
 
   /** Continuous held direction this frame, from keyboard or pointer-drag. */
   getDirection() {
     if (this.keyDir.dx !== 0 || this.keyDir.dy !== 0) return this.keyDir;
     if (this.pointerDir.dx !== 0 || this.pointerDir.dy !== 0) return this.pointerDir;
+    return { dx: 0, dy: 0 };
+  }
+
+  /** Same idea as getDirection(), but the raw (not-snapped-to-8-ways) unit vector - lets digging
+   *  follow the actual angle a finger/mouse drags at instead of only ever bending at 45 degrees.
+   *  Keyboard has no continuous angle to give, so it still only ever reports one of 8 directions
+   *  here; a zero vector (nothing held) is a valid, meaningful result - see Mole.freeCarve. */
+  getAimVector() {
+    if (this.pointerRawDir.dx !== 0 || this.pointerRawDir.dy !== 0) return this.pointerRawDir;
+    if (this.keyDir.dx !== 0 || this.keyDir.dy !== 0) {
+      const len = Math.hypot(this.keyDir.dx, this.keyDir.dy);
+      return { dx: this.keyDir.dx / len, dy: this.keyDir.dy / len };
+    }
     return { dx: 0, dy: 0 };
   }
 }
