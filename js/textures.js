@@ -220,6 +220,88 @@ function _drawDiagonalTile(ctx, variants, col, row, shape, px, py, tileSize) {
 }
 
 // ---------------------------------------------------------------------------
+// v2 (field.js) terrain rendering - additive, not wired into the live game yet. Reuses every
+// bit of the v1 art/logic above (_darkenedMaterialDraw, pickVariant, MATERIAL_FOR_TILE) so the
+// only thing that changes is WHERE the clip path comes from: field.tileSolidPolygons (marching
+// squares over the scalar density field) instead of _solidTrianglePoints' one fixed 45-degree
+// triangle per SHAPE. drawTerrainTile/_drawDiagonalTile above are untouched by any of this.
+// ---------------------------------------------------------------------------
+
+/** Same idea as drawTerrainTile, but the diggable-material clip shape comes from a
+ *  field.js ScalarField instead of tiles.js's SHAPE enum - any carved silhouette, not just one
+ *  of 5 fixed corner cuts. Non-diggable/special tiles (SURFACE, TUNNEL, SKY, food, scenery)
+ *  aren't field-driven yet and fall straight back to the v1 draw. */
+export function drawTerrainTileFieldClipped(ctx, map, field, tile, col, row, x, y, tileSize) {
+  if (!tile.diggable) {
+    drawTerrainTile(ctx, map, tile, col, row, x, y, tileSize);
+    return;
+  }
+
+  const px = Math.round(x);
+  const py = Math.round(y);
+  const material = MATERIAL_FOR_TILE[tile.id];
+  const variants = material ? materials[material] : null;
+  const solidFraction = field.tileSolidFraction(col, row);
+
+  if (solidFraction <= 0) {
+    _darkenedMaterialDraw(ctx, variants, col, row, px, py, tileSize);
+    return;
+  }
+  if (solidFraction >= 1) {
+    if (variants) {
+      ctx.drawImage(pickVariant(variants, col, row), px, py, tileSize, tileSize);
+    } else {
+      ctx.fillStyle = tile.color || "#000";
+      ctx.fillRect(px, py, tileSize, tileSize);
+    }
+    return;
+  }
+
+  _darkenedMaterialDraw(ctx, variants, col, row, px, py, tileSize);
+
+  const polygons = field.tileSolidPolygons(col, row);
+  if (polygons.length === 0) return;
+
+  ctx.save();
+  ctx.beginPath();
+  for (const poly of polygons) {
+    ctx.moveTo(px + (poly[0].x - col) * tileSize, py + (poly[0].y - row) * tileSize);
+    for (let i = 1; i < poly.length; i++) {
+      ctx.lineTo(px + (poly[i].x - col) * tileSize, py + (poly[i].y - row) * tileSize);
+    }
+    ctx.closePath();
+  }
+  ctx.clip();
+
+  if (variants) {
+    ctx.drawImage(pickVariant(variants, col, row), px, py, tileSize, tileSize);
+  } else {
+    ctx.fillStyle = tile.color || "#000";
+    ctx.fillRect(px, py, tileSize, tileSize);
+  }
+
+  // The inset/bevel look: stroke the real boundary line (field.tileContour) while still
+  // clipped to the solid region above - half the stroke's width falls outside the clip and
+  // gets thrown away, leaving only the inward-facing half, a soft shadow right at the edge
+  // that reads as the material being recessed rather than just cut off flat.
+  const contour = field.tileContour(col, row);
+  if (contour.length > 0) {
+    ctx.beginPath();
+    for (const s of contour) {
+      ctx.moveTo(px + (s.x1 - col) * tileSize, py + (s.y1 - row) * tileSize);
+      ctx.lineTo(px + (s.x2 - col) * tileSize, py + (s.y2 - row) * tileSize);
+    }
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.65)";
+    ctx.lineWidth = Math.max(3, tileSize * 0.18);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
 // Surface scenery: trees (trunk base + roots below), bushes, flowers, and the
 // visible greens of any root vegetable planted directly beneath this column.
 // All purely decorative except the tree's root tiles, which are real diggable

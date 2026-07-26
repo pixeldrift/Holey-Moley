@@ -44,6 +44,32 @@ const EDGE_CROSSINGS = [
   [], // 15: full
 ];
 
+// Same 16 cases as EDGE_CROSSINGS, but as FILLED polygons (corner + edge points, going around
+// each solid region) instead of just the boundary line - what rendering needs to clip the
+// existing bitmap art to "only the actually-solid part of this cell", the marching-squares
+// analog of textures.js's old _solidTrianglePoints (which only ever had one fixed triangle per
+// SHAPE; this is the same idea generalized to all 16 configurations). Point keys reference the
+// computed corner/edge positions built per-cell in _cellPoints. The saddle cases (5, 10) are two
+// disconnected polygons, same reason they're two segments in EDGE_CROSSINGS.
+const CASE_POLYGONS = [
+  [], // 0: empty
+  [["W", "BL", "S"]], // 1: BL
+  [["S", "BR", "E"]], // 2: BR
+  [["W", "BL", "BR", "E"]], // 3: BL+BR
+  [["N", "TR", "E"]], // 4: TR
+  [["W", "BL", "S"], ["N", "TR", "E"]], // 5: BL+TR (saddle)
+  [["N", "TR", "BR", "S"]], // 6: TR+BR
+  [["W", "BL", "BR", "TR", "N"]], // 7: BL+BR+TR (TL empty)
+  [["N", "TL", "W"]], // 8: TL
+  [["TL", "N", "S", "BL"]], // 9: TL+BL
+  [["N", "TL", "W"], ["S", "BR", "E"]], // 10: TL+BR (saddle)
+  [["TL", "BL", "BR", "E", "N"]], // 11: TL+BL+BR (TR empty)
+  [["TL", "TR", "E", "W"]], // 12: TL+TR
+  [["TL", "TR", "E", "S", "BL"]], // 13: TL+TR+BL (BR empty)
+  [["N", "TR", "BR", "BL", "W"]], // 14: TL+TR+BR (BL empty)
+  [["TL", "TR", "BR", "BL"]], // 15: full
+];
+
 // Where along the a->b edge the density crosses SOLID_THRESHOLD, as a 0..1 fraction from a to
 // b. A same-value edge (both solid or both empty) never actually gets queried by a real
 // marching-squares case, but degenerates safely to the midpoint rather than dividing by zero.
@@ -72,6 +98,17 @@ export class ScalarField {
   // tie-break. Pre-dig, every tile is uniformly solid or uniformly empty (no partial shapes
   // exist yet), so which side wins a boundary point only shifts the eventual contour by at most
   // half a sub-cell - imperceptible, and only at the seed step; digging supersedes it immediately.
+  //
+  // That "half a sub-cell" applies per shared POINT - but two tiles don't share just one point,
+  // they share a whole EDGE of them (every point along a tile's right/bottom border belongs to
+  // its neighbor by this same rule). So the very first dig on a tile whose neighbors are still
+  // completely untouched briefly shows a roughly half-sub-cell-wide strip of "solid" bleeding in
+  // from each untouched neighbor along the shared edge - real, and more visible at low
+  // resolution (confirmed empirically: about 20% of a tile's area at resolution 5, shrinking
+  // close to proportionally as resolution increases). It's inherently transient: the moment a
+  // neighboring tile is also dug, subtractCircle stamps those shared points directly and the
+  // bleed is gone - and it only ever happens on the solid side, so it never opens a gap where
+  // there shouldn't be one, only softens a corner that will get carved through soon anyway.
   _seedFromTileMap() {
     const { tileMap, res, pointsW, pointsH } = this;
     for (let py = 0; py < pointsH; py++) {
@@ -134,35 +171,47 @@ export class ScalarField {
     return solidCount / total;
   }
 
-  // Marching squares over an arbitrary rectangle of cells, in point-index space - shared by
-  // tileContour (one tile) and, later, multi-tile chunk contours for rendering without
-  // reworking this. Returns segments as {x1,y1,x2,y2} in world tile-units.
-  _marchCellsRegion(startPx, startPy, cellsW, cellsH) {
+  // One marching-squares cell's case index and its 8 named points (4 corners, 4 possibly-
+  // interpolated edge crossings), in world tile-units - the shared geometry both tileContour
+  // (boundary line) and tileSolidPolygons (filled region) build on, so the corner/edgeT math
+  // only happens once per cell no matter how many consumers read it.
+  _cellPoints(cx, cy) {
     const { res, pointsW, samples } = this;
+    const tl = samples[cy * pointsW + cx];
+    const tr = samples[cy * pointsW + cx + 1];
+    const bl = samples[(cy + 1) * pointsW + cx];
+    const br = samples[(cy + 1) * pointsW + cx + 1];
+    const caseIndex =
+      (bl >= SOLID_THRESHOLD ? 1 : 0) |
+      (br >= SOLID_THRESHOLD ? 2 : 0) |
+      (tr >= SOLID_THRESHOLD ? 4 : 0) |
+      (tl >= SOLID_THRESHOLD ? 8 : 0);
+    return {
+      caseIndex,
+      points: {
+        TL: { x: cx / res, y: cy / res },
+        TR: { x: (cx + 1) / res, y: cy / res },
+        BR: { x: (cx + 1) / res, y: (cy + 1) / res },
+        BL: { x: cx / res, y: (cy + 1) / res },
+        N: { x: (cx + edgeT(tl, tr)) / res, y: cy / res },
+        E: { x: (cx + 1) / res, y: (cy + edgeT(tr, br)) / res },
+        S: { x: (cx + edgeT(bl, br)) / res, y: (cy + 1) / res },
+        W: { x: cx / res, y: (cy + edgeT(tl, bl)) / res },
+      },
+    };
+  }
+
+  /** Boundary segments (world tile-units) for a single tile - the render-ready contour that
+   *  replaces the fixed 45-degree cut a SHAPE tile used to draw. */
+  tileContour(col, row) {
+    const { res } = this;
+    const px0 = col * res, py0 = row * res;
     const segments = [];
-    for (let cy = startPy; cy < startPy + cellsH; cy++) {
-      for (let cx = startPx; cx < startPx + cellsW; cx++) {
-        const tl = samples[cy * pointsW + cx];
-        const tr = samples[cy * pointsW + cx + 1];
-        const bl = samples[(cy + 1) * pointsW + cx];
-        const br = samples[(cy + 1) * pointsW + cx + 1];
-        const caseIndex =
-          (bl >= SOLID_THRESHOLD ? 1 : 0) |
-          (br >= SOLID_THRESHOLD ? 2 : 0) |
-          (tr >= SOLID_THRESHOLD ? 4 : 0) |
-          (tl >= SOLID_THRESHOLD ? 8 : 0);
-        const crossings = EDGE_CROSSINGS[caseIndex];
-        if (crossings.length === 0) continue;
-
-        const edgePoint = (edge) => {
-          if (edge === 0) return { x: (cx + edgeT(tl, tr)) / res, y: cy / res };
-          if (edge === 1) return { x: (cx + 1) / res, y: (cy + edgeT(tr, br)) / res };
-          if (edge === 2) return { x: (cx + edgeT(bl, br)) / res, y: (cy + 1) / res };
-          return { x: cx / res, y: (cy + edgeT(tl, bl)) / res };
-        };
-
-        for (const [a, b] of crossings) {
-          const p1 = edgePoint(a), p2 = edgePoint(b);
+    for (let cy = py0; cy < py0 + res; cy++) {
+      for (let cx = px0; cx < px0 + res; cx++) {
+        const { caseIndex, points } = this._cellPoints(cx, cy);
+        for (const [a, b] of EDGE_CROSSINGS[caseIndex]) {
+          const p1 = points[["N", "E", "S", "W"][a]], p2 = points[["N", "E", "S", "W"][b]];
           segments.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
         }
       }
@@ -170,9 +219,22 @@ export class ScalarField {
     return segments;
   }
 
-  /** Boundary segments (world tile-units) for a single tile - the render-ready contour that
-   *  replaces the fixed 45-degree cut a SHAPE tile used to draw. */
-  tileContour(col, row) {
-    return this._marchCellsRegion(col * this.res, row * this.res, this.res, this.res);
+  /** Filled solid-region polygons (world tile-units) for a single tile - each an array of
+   *  {x,y} points going around one contiguous solid patch (usually one polygon per tile, two
+   *  for a saddle cell straddling a diagonal). Used to clip existing bitmap art to the real
+   *  field boundary instead of the old fixed 45-degree triangle. */
+  tileSolidPolygons(col, row) {
+    const { res } = this;
+    const px0 = col * res, py0 = row * res;
+    const polygons = [];
+    for (let cy = py0; cy < py0 + res; cy++) {
+      for (let cx = px0; cx < px0 + res; cx++) {
+        const { caseIndex, points } = this._cellPoints(cx, cy);
+        for (const keys of CASE_POLYGONS[caseIndex]) {
+          polygons.push(keys.map((k) => points[k]));
+        }
+      }
+    }
+    return polygons;
   }
 }
