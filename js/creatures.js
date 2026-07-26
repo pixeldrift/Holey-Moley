@@ -657,27 +657,38 @@ export class CreatureManager {
     let segX = vertex1X, segY = vertex1Y;
     let openCol = c.col + travelDx, openRow = c.row + travelDy;
     let elbowCol = rampCol, elbowRow = rampRow;
+    let landedOnRealGround = false;
     for (let guard = 0; guard < 40; guard++) {
       const toX = segX + diagonalDx, toY = segY + diagonalDy;
       segments.push({ toX, toY, wallCol: elbowCol, wallRow: elbowRow });
       segX = toX; segY = toY;
       openCol += diagonalDx; openRow += diagonalDy;
       const nextElbowCol = openCol + wallDx, nextElbowRow = openRow + wallDy;
+      // A dug-out tunnel cell reports shape FULL just like untouched solid ground (digOut
+      // always resets shape to FULL), so isEdgeSolid alone can't tell "real wall" from "open
+      // air that happens to read as FULL" - check material solidity first. If the next elbow
+      // isn't solid at all, the terrain simply ran out (e.g. a diagonal dig immediately
+      // followed by a straight dig in the same direction) - stop here without treating it as
+      // either another rampable segment or as ground to land flat on; the last diagonal
+      // segment already pushed above is the true final leg.
+      if (!this.map.getTile(nextElbowCol, nextElbowRow).solid) break;
       elbowCol = nextElbowCol; elbowRow = nextElbowRow;
-      if (this.map.isEdgeSolid(nextElbowCol, nextElbowRow, wallDx, wallDy)) break;
+      if (this.map.isEdgeSolid(nextElbowCol, nextElbowRow, wallDx, wallDy)) { landedOnRealGround = true; break; }
     }
 
     const newCol = openCol, newRow = openRow;
     const newAnchor = _antAnchor(newCol, newRow, wallDx, wallDy);
 
-    // Build the leg chain back-to-front: the final flat landing leg, then each diagonal
-    // segment prepended in reverse, all sharing the same cosmetic diagonal render angle.
-    let nextLeg = {
+    // Build the leg chain back-to-front: the final flat landing leg (only when the ramp
+    // actually reached real solid ground - otherwise the last diagonal segment IS the final
+    // leg, since there's no real wall left to land flat against), then each diagonal segment
+    // prepended in reverse, all sharing the same cosmetic diagonal render angle.
+    let nextLeg = landedOnRealGround ? {
       wallDx, wallDy, travelDx, travelDy,
       toX: newAnchor.x, toY: newAnchor.y, vx: travelDx * speed, vy: travelDy * speed,
       wallCol: elbowCol, wallRow: elbowRow,
       diagonalDx: null, diagonalDy: null, next: null,
-    };
+    } : null;
     for (let i = segments.length - 1; i >= 0; i--) {
       const seg = segments[i];
       nextLeg = {
