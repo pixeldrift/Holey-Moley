@@ -39,18 +39,6 @@ const FALL_SPEED_MULTIPLIER = 1.5; // falling off a wall drops faster than climb
 // reading it, like creatures.js's collision) that the whole tile is open.
 const TUNNEL_FRACTION_THRESHOLD = 0.15;
 
-// Burrow digging (see Mole.holdBurrow): holding the dig control with no direction pressed grows
-// a round chamber centered on the mole - the "dig a round room to stop and rest in" action, as
-// opposed to tryContinuousDig's moving-forward carve. Scored the same way (real digging, not a
-// polish tool), at a flat per-area rate rather than tracking the exact material at every point
-// the growing circle happens to cover.
-const BURROW_MIN_RADIUS = 0.6; // roughly one normal dig capsule's reach - no jarring pop-in
-const BURROW_MAX_RADIUS = 1.9; // a proper round room, capped so holding dig forever isn't free
-const BURROW_GROWTH_PER_SEC = 0.35; // tile-units of radius per second held
-const BURROW_REGROW_STEP = 0.02; // minimum radius growth before bothering to re-carve
-const BURROW_SCORE_PER_AREA = 2; // matches DIRT_SOFT's digScore/tile-area rate
-const BURROW_ENERGY_PER_AREA = 2.5; // matches DIRT_SOFT's digEnergyCost/tile-area rate
-
 // Which corner stays solid on each of the two "elbow" tiles (the orthogonal neighbors
 // flanking a diagonal step), keyed by the move's [dx,dy]. See tiles.js SHAPE.
 const DIAGONAL_ELBOW_SHAPES = {
@@ -97,9 +85,6 @@ export class Mole {
     this._pendingFall = false;
     this._digScoreCarry = 0; // fractional score between whole-star awards - see tryContinuousDig
     this._continuousDigActive = false; // set for one frame by tryContinuousDig - see update()
-    this._burrowHeld = 0; // ms the dig control has been held with no direction - see holdBurrow
-    this._burrowRadius = 0; // radius already carved this hold, so growth only adds the new ring
-    this._burrowScoreCarry = 0; // fractional score between whole-star awards - see holdBurrow
     this.onScoreChange = null;
     this.onEnergyChange = null;
     this.onStarsEarned = null;
@@ -195,9 +180,8 @@ export class Mole {
     this.col = Math.round(this.px);
     this.row = Math.round(this.py);
 
-    // Same tiny-fractional-amount-per-tick trap holdBurrow already has to guard against - each
-    // frame's sliver of distance is almost always well under 1 star, so round the running total
-    // instead of each individual tick.
+    // Each frame's sliver of distance is almost always well under 1 star on its own - round the
+    // running total instead of each individual tick, or nearly every tick would round to 0.
     this._digScoreCarry += dist * aheadTile.digScore;
     const wholeScore = Math.floor(this._digScoreCarry);
     if (wholeScore > 0) {
@@ -214,58 +198,6 @@ export class Mole {
     }
 
     return true;
-  }
-
-  // Holding the dig control with no direction pressed (see game.js's loop - it calls this
-  // instead of tryContinuousDig exactly when the aim vector is zero) grows a round chamber
-  // centered on the mole, a widening ring at a time, up to BURROW_MAX_RADIUS - "dig a round
-  // burrow" as its own distinct action rather than moving forward. Requires standing still
-  // (isBusy) since there's no direction to walk into; resetBurrow() must be called by the caller
-  // the instant that's no longer true (direction pressed, dig released) so the next hold starts
-  // over instead of resuming a stale radius.
-  holdBurrow(dt) {
-    if (!this.field || this.state === "sleep" || this.falling || this.isBusy) return;
-    if (!this.map.inBounds(this.col, this.row) || this.row < this.map.skyRows) return;
-
-    this._burrowHeld += dt;
-    const radius = Math.min(BURROW_MAX_RADIUS, BURROW_MIN_RADIUS + (BURROW_GROWTH_PER_SEC * this._burrowHeld) / 1000);
-    if (radius < this._burrowRadius + BURROW_REGROW_STEP) return;
-
-    const prevRadius = this._burrowRadius;
-    this._burrowRadius = radius;
-    const newArea = Math.PI * (radius * radius - prevRadius * prevRadius);
-
-    this.field.subtractCircleProtected(this.px, this.py, radius);
-
-    const colMin = Math.max(0, Math.floor(this.px - radius));
-    const colMax = Math.min(this.map.width - 1, Math.floor(this.px + radius));
-    const rowMin = Math.max(0, Math.floor(this.py - radius));
-    const rowMax = Math.min(this.map.height - 1, Math.floor(this.py + radius));
-    for (let row = rowMin; row <= rowMax; row++) {
-      for (let col = colMin; col <= colMax; col++) {
-        if (this.map.getTile(col, row) !== TILE.TUNNEL && this.field.tileSolidFraction(col, row) < TUNNEL_FRACTION_THRESHOLD) {
-          this.map.digOut(col, row);
-        }
-      }
-    }
-
-    // Each tick's slice of new area is a thin ring - its raw score is almost always well under
-    // 1 star, so rounding per-tick would round nearly everything down to 0 and starve the total.
-    // Carry the fractional remainder forward instead, only ever awarding whole stars.
-    this._burrowScoreCarry += newArea * BURROW_SCORE_PER_AREA;
-    const wholeScore = Math.floor(this._burrowScoreCarry);
-    if (wholeScore > 0) {
-      this._addScore(wholeScore);
-      this._burrowScoreCarry -= wholeScore;
-    }
-    this._spendEnergy(newArea * BURROW_ENERGY_PER_AREA);
-  }
-
-  /** Call whenever holdBurrow's conditions stop holding (direction pressed, dig released, mole
-   *  starts moving) - without this the next hold would silently resume mid-radius. */
-  resetBurrow() {
-    this._burrowHeld = 0;
-    this._burrowRadius = 0;
   }
 
   _requestDiggingMove(dx, dy) {
