@@ -87,6 +87,9 @@ export class Game {
     this.hud.on("controlSchemeChange", (mode) => {
       this.tapToMoveOnly = mode === "tap";
     });
+    this.hud.on("wireframeToggle", (enabled) => {
+      this.wireframeMode = enabled;
+    });
     this.hud.on("openMole", () => {
       this._wasPlayingBeforeMole = this.state === "playing";
       if (this.state === "playing") this.state = "paused";
@@ -224,14 +227,22 @@ export class Game {
     const originX = viewW / 2 - camera.x;
     const originY = viewH / 2 - camera.y;
 
-    // Pure-scenery rolling hills behind the surface line - not a tile, not interactive.
-    // Ground line is the BOTTOM of the grass tile (grass art fills the whole cell).
-    drawBackgroundHills(ctx, viewW, viewH, originX, originY + (this.map.surfaceRow + 1) * TILE_SIZE);
-
     const startCol = Math.max(0, Math.floor(-originX / TILE_SIZE) - 1);
     const endCol = Math.min(this.map.width - 1, Math.ceil((viewW - originX) / TILE_SIZE) + 1);
     const startRow = Math.max(0, Math.floor(-originY / TILE_SIZE) - 1);
     const endRow = Math.min(this.map.height - 1, Math.ceil((viewH - originY) / TILE_SIZE) + 1);
+
+    if (this.wireframeMode) {
+      this._renderWireframe(ctx, startCol, endCol, startRow, endRow, originX, originY);
+      const moleX = originX + this.mole.px * TILE_SIZE;
+      const moleY = originY + this.mole.py * TILE_SIZE;
+      drawMole(ctx, this.mole, moleX, moleY, TILE_SIZE, now);
+      return;
+    }
+
+    // Pure-scenery rolling hills behind the surface line - not a tile, not interactive.
+    // Ground line is the BOTTOM of the grass tile (grass art fills the whole cell).
+    drawBackgroundHills(ctx, viewW, viewH, originX, originY + (this.map.surfaceRow + 1) * TILE_SIZE);
 
     for (let row = startRow; row <= endRow; row++) {
       for (let col = startCol; col <= endCol; col++) {
@@ -269,5 +280,27 @@ export class Game {
     const moleX = originX + this.mole.px * TILE_SIZE;
     const moleY = originY + this.mole.py * TILE_SIZE;
     drawMole(ctx, this.mole, moleX, moleY, TILE_SIZE, now);
+  }
+
+  /** Beta debug view: just the field's marching-squares tunnel outlines and the mole, no
+   *  textures/decorations/creatures - lets wall/overhang geometry be inspected directly. */
+  _renderWireframe(ctx, startCol, endCol, startRow, endRow, originX, originY) {
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(0, 0, this.viewW, this.viewH);
+
+    ctx.strokeStyle = "#00ff88";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let row = startRow; row <= endRow; row++) {
+      for (let col = startCol; col <= endCol; col++) {
+        const tile = this.map.getTile(col, row);
+        if (tile === TILE.SKY) continue;
+        for (const seg of this.field.tileContour(col, row)) {
+          ctx.moveTo(originX + seg.x1 * TILE_SIZE, originY + seg.y1 * TILE_SIZE);
+          ctx.lineTo(originX + seg.x2 * TILE_SIZE, originY + seg.y2 * TILE_SIZE);
+        }
+      }
+    }
+    ctx.stroke();
   }
 }
