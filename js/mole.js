@@ -445,6 +445,21 @@ function shade(hex, amt) {
   return `rgb(${r | 0},${g | 0},${b | 0})`;
 }
 
+// A diagonal tile (see tiles.js SHAPE) the mole is allowed to rest or glide inside of - see
+// TileMap.canEnter's diagonal-approach case - is still materially solid on one triangular
+// half; only the other half, centered a sixth of a tile off the tile's raw center toward the
+// open corner, is actually open ground (the two triangles split the tile along its diagonal
+// cut, so their centroids sit at 1/3 and 2/3 of the way across - 1/6 tile off center each way).
+// Drawing the sprite at the tile's literal center - which is where mole.px/py naturally lands,
+// dead center of whichever tile it's currently in or transitioning into/out of - draws it half
+// inside the still-solid triangle. This nudges the render (not the actual collision position)
+// toward the open triangle's centroid so the sprite visually clears the solid corner.
+function _diagonalRenderOffset(map, px, py) {
+  const solidDir = map.diagonalSlopeDir(Math.round(px), Math.round(py));
+  if (!solidDir) return { x: 0, y: 0 };
+  return { x: -solidDir.dx / 6, y: -solidDir.dy / 6 };
+}
+
 // ---------------------------------------------------------------------------
 // Procedural mole sprite. No image assets yet - this draws the mole and its
 // walk/dig/climb/eat/sleep animation cycles with canvas primitives. Swap the
@@ -462,8 +477,13 @@ export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
     return;
   }
 
+  const diagOffset = mole.map ? _diagonalRenderOffset(mole.map, mole.px, mole.py) : { x: 0, y: 0 };
+
   ctx.save();
-  ctx.translate(screenX + tileSize / 2 + bump * -flip, screenY + tileSize / 2);
+  ctx.translate(
+    screenX + tileSize / 2 + bump * -flip + diagOffset.x * tileSize,
+    screenY + tileSize / 2 + diagOffset.y * tileSize
+  );
 
   const isVertical = mole.actionType === MOVE_ACTION.CLIMB;
   if (isVertical && mole.actionTarget) {
