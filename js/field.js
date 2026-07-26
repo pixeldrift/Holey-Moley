@@ -169,6 +169,38 @@ export class ScalarField {
     this._invalidateTileCache(cx, cy, r);
   }
 
+  // Same as subtractCircle, but leaves any point whose enclosing tile is solid-and-not-diggable
+  // (rock - the only tile type that combination describes; TUNNEL/SKY/SURFACE are also
+  // non-diggable but aren't solid, so they're never blocked here, which matters: a TUNNEL tile
+  // can still have solid leftover residue in the field that a burrow dig needs to be able to
+  // clear) untouched - lets a big player-triggered round dig (see Mole.holdBurrow) expand freely
+  // without ever eating through the one material ordinary tile-by-tile digging already can't
+  // touch either. Reads tileMap.getTile(...).solid/.diggable the same duck-typed way
+  // _seedFromTileMap already does, rather than importing tiles.js's TILE constants directly.
+  subtractCircleProtected(cx, cy, r) {
+    const { res, pointsW, pointsH, samples, tileMap } = this;
+    const pxMin = Math.max(0, Math.floor((cx - r) * res));
+    const pxMax = Math.min(pointsW - 1, Math.ceil((cx + r) * res));
+    const pyMin = Math.max(0, Math.floor((cy - r) * res));
+    const pyMax = Math.min(pointsH - 1, Math.ceil((cy + r) * res));
+    const r2 = r * r;
+    for (let py = pyMin; py <= pyMax; py++) {
+      const wy = py / res;
+      const dy = wy - cy;
+      const row = Math.min(tileMap.height - 1, Math.floor(wy));
+      for (let px = pxMin; px <= pxMax; px++) {
+        const wx = px / res;
+        const dx = wx - cx;
+        if (dx * dx + dy * dy > r2) continue;
+        const col = Math.min(tileMap.width - 1, Math.floor(wx));
+        const tile = tileMap.getTile(col, row);
+        if (tile.solid && !tile.diggable) continue; // rock - never carved
+        samples[py * pointsW + px] = 0;
+      }
+    }
+    this._invalidateTileCache(cx, cy, r);
+  }
+
   // Every tile whose own point block overlaps the circle's bounding box needs its cache entry
   // dropped - not just the tile(s) the center falls in, since a dig can graze a neighbor's edge
   // (or, per the shared-edge seeding note above, even just touching one tile's own points can

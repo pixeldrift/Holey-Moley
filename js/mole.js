@@ -18,6 +18,37 @@ const WALK_DURATION = 220;
 const CLIMB_DURATION = 260;
 const FALL_SPEED_MULTIPLIER = 1.5; // falling off a wall drops faster than climbing it
 
+// Free-carve (see Mole.freeCarve): a continuous, arbitrary-angle nibble that runs alongside the
+// discrete per-tile dig action whenever the dig control is held, following the raw (un-snapped-
+// to-8-directions) aim vector instead of the grid. Two things this buys that the grid-locked
+// capsule dig alone can't: tunnel edges that round off smoothly in whatever direction the player
+// actually drags instead of only ever bending at 45/90 degrees, and the ability to clear a small
+// stray solid island left behind between two nearby-but-not-quite-touching digs, by just steering
+// straight at it - something the grid-hop system can never reach if no adjacent tile center lines
+// up with it. Deliberately unscored and small-radius/short-reach relative to the real dig (see
+// tiles.js's digScore) - it costs energy like ordinary digging but never grants stars, so it stays
+// a precision/cleanup tool layered on top of the real dig loop rather than a way to skip it.
+const CARVE_REACH = 0.42; // tile-units ahead of the mole's own center, along the aim direction
+const CARVE_RADIUS = 0.35; // smaller than DIG_RADIUS - a nibble, not a full bite
+const CARVE_INTERVAL_MS = 60; // throttle so this stays a fixed-rate tick, not a per-frame spam
+const CARVE_ENERGY_PER_SEC = 3; // only charged on ticks that actually remove material
+// A tile only flips to TUNNEL (see tiles.js) once the field says it's genuinely mostly cleared -
+// a nibble that merely grazes a fresh tile's corner shouldn't tell the legacy tile grid (and
+// anything reading it, like creatures.js's collision) that the whole tile is open.
+const CARVE_TUNNEL_FRACTION = 0.15;
+
+// Burrow digging (see Mole.holdBurrow): holding the dig control with no direction pressed grows
+// a round chamber centered on the mole instead of nibbling a fixed small spot - the "dig a round
+// room like a real burrow" action, as opposed to freeCarve's precision cleanup nibble. Unlike
+// freeCarve this IS scored (real digging, not a polish tool), at a flat per-area rate rather than
+// tracking the exact material at every point the growing circle happens to cover.
+const BURROW_MIN_RADIUS = 0.6; // roughly one normal dig capsule's reach - no jarring pop-in
+const BURROW_MAX_RADIUS = 1.9; // a proper round room, capped so holding dig forever isn't free
+const BURROW_GROWTH_PER_SEC = 0.35; // tile-units of radius per second held
+const BURROW_REGROW_STEP = 0.02; // minimum radius growth before bothering to re-carve
+const BURROW_SCORE_PER_AREA = 2; // matches DIRT_SOFT's digScore/tile-area rate
+const BURROW_ENERGY_PER_AREA = 2.5; // matches DIRT_SOFT's digEnergyCost/tile-area rate
+
 // Which corner stays solid on each of the two "elbow" tiles (the orthogonal neighbors
 // flanking a diagonal step), keyed by the move's [dx,dy]. See tiles.js SHAPE.
 const DIAGONAL_ELBOW_SHAPES = {
@@ -62,6 +93,10 @@ export class Mole {
     this.wallDx = 0;
     this.falling = false;
     this._pendingFall = false;
+    this._carveAccum = 0; // throttle timer for freeCarve
+    this._burrowHeld = 0; // ms the dig control has been held with no direction - see holdBurrow
+    this._burrowRadius = 0; // radius already carved this hold, so growth only adds the new ring
+    this._burrowScoreCarry = 0; // fractional score between whole-star awards - see holdBurrow
     this.onScoreChange = null;
     this.onEnergyChange = null;
     this.onStarsEarned = null;
@@ -112,6 +147,91 @@ export class Mole {
     } else {
       this._requestSurfaceMove(dx, dy);
     }
+  }
+
+  // Continuous, arbitrary-angle nibble - see the CARVE_* constants' module comment. Runs every
+  // frame the dig control is held (from game.js's loop, independent of requestMove/isBusy - it
+  // never moves the mole or advances the action state machine, only sculpts the field a little
+  // near it), driven by the raw un-snapped aim vector (InputController.getAimVector) so it can
+  // reach any angle, not just the 8 grid directions. aimX/aimY may be a zero vector (dig held,
+  // no direction pressed) - that's "nibble right where I'm standing," exactly what's needed to
+  // clear a stray leftover fragment the player has just walked up next to.
+  freeCarve(dt, aimX, aimY) {
+    if (!this.field || this.state === "sleep" || this.falling) return;
+    this._carveAccum += dt;
+    if (this._carveAccum < CARVE_INTERVAL_MS) return;
+    const elapsed = this._carveAccum;
+    this._carveAccum = 0;
+
+    const mag = Math.hypot(aimX, aimY);
+    const nx = mag > 0.01 ? aimX / mag : 0;
+    const ny = mag > 0.01 ? aimY / mag : 0;
+    const reach = mag > 0.01 ? CARVE_REACH : 0;
+    const cx = this.px + nx * reach;
+    const cy = this.py + ny * reach;
+
+    const col = Math.floor(cx), row = Math.floor(cy);
+    if (!this.map.inBounds(col, row) || row < this.map.skyRows) return;
+    if (this.map.getTile(col, row) === TILE.ROCK) return; // never eat through rock
+    if (this.field.sampleWorld(cx, cy) < SOLID_THRESHOLD) return; // nothing there to remove
+
+    this.field.subtractCircle(cx, cy, CARVE_RADIUS);
+    if (this.map.getTile(col, row) !== TILE.TUNNEL && this.field.tileSolidFraction(col, row) < CARVE_TUNNEL_FRACTION) {
+      this.map.digOut(col, row);
+    }
+    this._spendEnergy(CARVE_ENERGY_PER_SEC * elapsed / 1000);
+  }
+
+  // Holding the dig control with no direction pressed (see game.js's loop - it calls this
+  // instead of freeCarve exactly when the aim vector is zero) grows a round chamber centered on
+  // the mole, the widening-ring at a time, up to BURROW_MAX_RADIUS - "dig a round burrow" as its
+  // own distinct action rather than freeCarve's tiny fixed nibble. Requires standing still
+  // (isBusy) since there's no direction to walk into; resetBurrow() must be called by the caller
+  // the instant that's no longer true (direction pressed, dig released) so the next hold starts
+  // over instead of resuming a stale radius.
+  holdBurrow(dt) {
+    if (!this.field || this.state === "sleep" || this.falling || this.isBusy) return;
+    if (!this.map.inBounds(this.col, this.row) || this.row < this.map.skyRows) return;
+
+    this._burrowHeld += dt;
+    const radius = Math.min(BURROW_MAX_RADIUS, BURROW_MIN_RADIUS + (BURROW_GROWTH_PER_SEC * this._burrowHeld) / 1000);
+    if (radius < this._burrowRadius + BURROW_REGROW_STEP) return;
+
+    const prevRadius = this._burrowRadius;
+    this._burrowRadius = radius;
+    const newArea = Math.PI * (radius * radius - prevRadius * prevRadius);
+
+    this.field.subtractCircleProtected(this.px, this.py, radius);
+
+    const colMin = Math.max(0, Math.floor(this.px - radius));
+    const colMax = Math.min(this.map.width - 1, Math.floor(this.px + radius));
+    const rowMin = Math.max(0, Math.floor(this.py - radius));
+    const rowMax = Math.min(this.map.height - 1, Math.floor(this.py + radius));
+    for (let row = rowMin; row <= rowMax; row++) {
+      for (let col = colMin; col <= colMax; col++) {
+        if (this.map.getTile(col, row) !== TILE.TUNNEL && this.field.tileSolidFraction(col, row) < CARVE_TUNNEL_FRACTION) {
+          this.map.digOut(col, row);
+        }
+      }
+    }
+
+    // Each tick's slice of new area is a thin ring - its raw score is almost always well under
+    // 1 star, so rounding per-tick would round nearly everything down to 0 and starve the total.
+    // Carry the fractional remainder forward instead, only ever awarding whole stars.
+    this._burrowScoreCarry += newArea * BURROW_SCORE_PER_AREA;
+    const wholeScore = Math.floor(this._burrowScoreCarry);
+    if (wholeScore > 0) {
+      this._addScore(wholeScore);
+      this._burrowScoreCarry -= wholeScore;
+    }
+    this._spendEnergy(newArea * BURROW_ENERGY_PER_AREA);
+  }
+
+  /** Call whenever holdBurrow's conditions stop holding (direction pressed, dig released, mole
+   *  starts moving) - without this the next hold would silently resume mid-radius. */
+  resetBurrow() {
+    this._burrowHeld = 0;
+    this._burrowRadius = 0;
   }
 
   _requestDiggingMove(dx, dy) {
