@@ -86,7 +86,20 @@ export class ScalarField {
     this.pointsW = tileMap.width * resolution + 1;
     this.pointsH = tileMap.height * resolution + 1;
     this.samples = new Uint8Array(this.pointsW * this.pointsH);
+    // tileSolidFraction/tileContour/tileSolidPolygons are re-derived from raw samples on every
+    // call by design (no stored-shape state to drift out of sync - see the module doc comment),
+    // but that makes them too expensive to call fresh every frame for every visible tile at a
+    // real resolution (measured: ~30ms for one frame's worth of boundary tiles at resolution 32,
+    // several times a 60fps frame budget on its own). A tile's terrain only ever changes when a
+    // dig actually reaches it, so caching per tile and invalidating just the tiles a dig's
+    // bounding box touches (see subtractCircle/_invalidateTileCache) gets the same "always
+    // correct, never hand-tracked" guarantee at a cost that's amortized to nearly free.
+    this._tileCache = new Map(); // key: row*width+col -> {fraction, contour, polygons}
     this._seedFromTileMap();
+  }
+
+  _tileCacheKey(col, row) {
+    return row * this.tileMap.width + col;
   }
 
   _idx(px, py) {
@@ -153,12 +166,42 @@ export class ScalarField {
         if (dx * dx + dy * dy <= r2) samples[py * pointsW + px] = 0;
       }
     }
+    this._invalidateTileCache(cx, cy, r);
+  }
+
+  // Every tile whose own point block overlaps the circle's bounding box needs its cache entry
+  // dropped - not just the tile(s) the center falls in, since a dig can graze a neighbor's edge
+  // (or, per the shared-edge seeding note above, even just touching one tile's own points can
+  // affect a neighbor's cached shape at their shared border).
+  _invalidateTileCache(cx, cy, r) {
+    const { tileMap } = this;
+    const colMin = Math.max(0, Math.floor(cx - r));
+    const colMax = Math.min(tileMap.width - 1, Math.floor(cx + r));
+    const rowMin = Math.max(0, Math.floor(cy - r));
+    const rowMax = Math.min(tileMap.height - 1, Math.floor(cy + r));
+    for (let row = rowMin; row <= rowMax; row++) {
+      for (let col = colMin; col <= colMax; col++) {
+        this._tileCache.delete(this._tileCacheKey(col, row));
+      }
+    }
+  }
+
+  _tileEntry(col, row) {
+    const key = this._tileCacheKey(col, row);
+    let entry = this._tileCache.get(key);
+    if (!entry) {
+      entry = {};
+      this._tileCache.set(key, entry);
+    }
+    return entry;
   }
 
   /** Fraction (0..1) of a tile's own point samples that are solid - the coarse "is this tile
    *  basically solid" signal that replaces hand-tracked SHAPE/solid flags, derived instead of
    *  stored so it can never drift out of sync with what was actually dug. */
   tileSolidFraction(col, row) {
+    const entry = this._tileEntry(col, row);
+    if (entry.fraction !== undefined) return entry.fraction;
     const { res, pointsW, samples } = this;
     const px0 = col * res, py0 = row * res;
     let solidCount = 0;
@@ -168,7 +211,8 @@ export class ScalarField {
         if (samples[py * pointsW + px] >= SOLID_THRESHOLD) solidCount++;
       }
     }
-    return solidCount / total;
+    entry.fraction = solidCount / total;
+    return entry.fraction;
   }
 
   // One marching-squares cell's case index and its 8 named points (4 corners, 4 possibly-
@@ -204,6 +248,8 @@ export class ScalarField {
   /** Boundary segments (world tile-units) for a single tile - the render-ready contour that
    *  replaces the fixed 45-degree cut a SHAPE tile used to draw. */
   tileContour(col, row) {
+    const entry = this._tileEntry(col, row);
+    if (entry.contour) return entry.contour;
     const { res } = this;
     const px0 = col * res, py0 = row * res;
     const segments = [];
@@ -216,6 +262,7 @@ export class ScalarField {
         }
       }
     }
+    entry.contour = segments;
     return segments;
   }
 
@@ -224,6 +271,8 @@ export class ScalarField {
    *  for a saddle cell straddling a diagonal). Used to clip existing bitmap art to the real
    *  field boundary instead of the old fixed 45-degree triangle. */
   tileSolidPolygons(col, row) {
+    const entry = this._tileEntry(col, row);
+    if (entry.polygons) return entry.polygons;
     const { res } = this;
     const px0 = col * res, py0 = row * res;
     const polygons = [];
@@ -235,6 +284,7 @@ export class ScalarField {
         }
       }
     }
+    entry.polygons = polygons;
     return polygons;
   }
 }
