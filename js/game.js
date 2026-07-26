@@ -160,7 +160,15 @@ export class Game {
       this._handleContinuousInput();
       if (this.input.isDigging()) {
         const aim = this.input.getAimVector();
-        this.mole.freeCarve(dt, aim.dx, aim.dy);
+        if (aim.dx === 0 && aim.dy === 0) {
+          // Dig held, no direction pressed: grow a round burrow in place instead of nibbling.
+          this.mole.holdBurrow(dt);
+        } else {
+          this.mole.freeCarve(dt, aim.dx, aim.dy);
+          this.mole.resetBurrow();
+        }
+      } else {
+        this.mole.resetBurrow();
       }
       this.mole.update(dt);
       this.creatures.update(dt, this.mole);
