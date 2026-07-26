@@ -157,19 +157,7 @@ export class Game {
     this.lastTime = now;
 
     if (this.state === "playing") {
-      this._handleContinuousInput();
-      if (this.input.isDigging()) {
-        const aim = this.input.getAimVector();
-        if (aim.dx === 0 && aim.dy === 0) {
-          // Dig held, no direction pressed: grow a round burrow in place instead of nibbling.
-          this.mole.holdBurrow(dt);
-        } else {
-          this.mole.freeCarve(dt, aim.dx, aim.dy);
-          this.mole.resetBurrow();
-        }
-      } else {
-        this.mole.resetBurrow();
-      }
+      this._handleContinuousInput(dt);
       this.mole.update(dt);
       this.creatures.update(dt, this.mole);
       this._updateCamera(dt);
@@ -185,11 +173,31 @@ export class Game {
     requestAnimationFrame((t) => this._loop(t));
   }
 
-  _handleContinuousInput() {
+  _handleContinuousInput(dt) {
     if (this.mole.isBusy) return;
+    const digging = this.input.isDigging();
+
+    if (digging) {
+      const aim = this.input.getAimVector();
+      if (aim.dx === 0 && aim.dy === 0) {
+        // Dig held, no direction: grow a round burrow in place instead of moving/carving.
+        this.mole.holdBurrow(dt);
+        return;
+      }
+      this.mole.resetBurrow();
+      // Arbitrary-angle digging: if there's diggable material directly ahead, this moves and
+      // carves the mole itself along the raw drag/key angle - not snapped to the 8 grid
+      // directions - and we're done for this frame. It only returns false when there's nothing
+      // for it to do (path already open, or rock just got bumped), in which case fall through to
+      // the ordinary discrete system below exactly as if this never ran.
+      if (this.mole.tryContinuousDig(dt, aim.dx, aim.dy)) return;
+    } else {
+      this.mole.resetBurrow();
+    }
+
     const dir = this.input.getDirection();
     if (dir.dx !== 0 || dir.dy !== 0) {
-      this.mole.requestMove(dir.dx, dir.dy, this.input.isDigging());
+      this.mole.requestMove(dir.dx, dir.dy, digging);
     }
   }
 
