@@ -8,6 +8,12 @@ import { raycast, canEnterField, findSupport, isOverhangNormal } from "./field-c
 // tile away."
 const GRAVITY_SEARCH_DIST = 1.0;
 
+// Radius (tile-units) of the circle a dig carves into the field - see Mole._digField. Chosen so
+// consecutive orthogonal AND diagonal dig steps connect with no gap: adjacent cell centers are
+// 1 tile-unit apart on a cardinal step but sqrt(2) apart on a diagonal one, and a lone circle at
+// each step's endpoint alone wouldn't reliably touch the previous one on the diagonal case.
+const DIG_RADIUS = 0.55;
+
 const WALK_DURATION = 220;
 const CLIMB_DURATION = 260;
 const FALL_SPEED_MULTIPLIER = 1.5; // falling off a wall drops faster than climbing it
@@ -419,6 +425,10 @@ export class Mole {
       if (dx !== 0 && dy !== 0) {
         this._carveDiagonalElbows(this.col, this.row, dx, dy);
       }
+      // Keeps the field the authoritative shape (see field.js) in sync with the same dig - the
+      // material grid above still gets digOut/carveDiagonalElbows too, so creatures.js (not
+      // yet field-aware - see field-collision.js's module comment) keeps working against it.
+      if (this.field) this._digField(this.col, this.row, col, row);
     }
 
     this._spendEnergy(this._pendingEnergyCost); // may put the mole to sleep
@@ -472,6 +482,24 @@ export class Mole {
     const [shapeA, shapeB] = DIAGONAL_ELBOW_SHAPES[`${dx},${dy}`];
     this.map.carveDiagonal(fromCol + dx, fromRow, shapeA);
     this.map.carveDiagonal(fromCol, fromRow + dy, shapeB);
+  }
+
+  // Carves a circle of DIG_RADIUS at several points along the straight line actually just
+  // traveled (a cheap capsule approximation), not just one circle at the destination - a single
+  // circle at only the endpoint wouldn't reliably touch the previous dig's circle on a diagonal
+  // step, since adjacent cell centers are sqrt(2) tile-units apart on the diagonal but the two
+  // circles would only be 2*DIG_RADIUS apart. This is what replaces carveDiagonal/
+  // _carveDiagonalElbows entirely for shape purposes - no separate elbow-notching step needed,
+  // the capsule's own geometry already traces a smooth line between the two cells.
+  _digField(fromCol, fromRow, toCol, toRow) {
+    const fromX = fromCol + 0.5, fromY = fromRow + 0.5;
+    const toX = toCol + 0.5, toY = toRow + 0.5;
+    const dist = Math.hypot(toX - fromX, toY - fromY);
+    const steps = Math.max(1, Math.ceil(dist / (DIG_RADIUS * 0.6)));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      this.field.subtractCircle(fromX + (toX - fromX) * t, fromY + (toY - fromY) * t, DIG_RADIUS);
+    }
   }
 
   _applyFood(typeKey) {

@@ -1,15 +1,21 @@
 import { TileMap, TILE } from "./tiles.js";
+import { ScalarField } from "./field.js";
 import { Mole, drawMole } from "./mole.js";
 import { InputController } from "./input.js";
 import { HUD } from "./hud.js";
 import { CreatureManager, drawCreature, drawWorm, initCreatureSprites } from "./creatures.js";
-import { drawTerrainTile, drawBackgroundHills, drawSurfaceDecorations, drawUndergroundDecorations, initTextures } from "./textures.js";
+import { drawTerrainTileFieldClipped, drawBackgroundHills, drawSurfaceDecorations, drawUndergroundDecorations, initTextures } from "./textures.js";
 import { Profile } from "./profile.js";
 
 const TILE_SIZE = 48;
 const MAP_WIDTH = 40;
 const MAP_HEIGHT = 90;
 const SKY_ROWS = 3;
+// Sub-cells per tile edge for the terrain field (see field.js) - 32 renders close to a clean
+// circle (confirmed against a resolution sweep) at a still-trivial cost: tens of ms to build
+// the field once at map load, and (with field.js's per-tile cache) a fraction of a millisecond
+// per frame to render, nowhere near either budget.
+const FIELD_RESOLUTION = 32;
 
 export class Game {
   constructor(canvas, sprites) {
@@ -42,7 +48,8 @@ export class Game {
 
   _newMap() {
     this.map = new TileMap(MAP_WIDTH, MAP_HEIGHT, { skyRows: SKY_ROWS });
-    this.mole = new Mole(this.map, this.map.startCol, this.map.surfaceRow);
+    this.field = new ScalarField(this.map, FIELD_RESOLUTION);
+    this.mole = new Mole(this.map, this.map.startCol, this.map.surfaceRow, this.field);
     this.mole.applyProfile(this.profile.effects());
     this.mole.setColors(this.profile.colorSet);
     this.mole.onScoreChange = (score) => this.hud.setScore(score);
@@ -232,7 +239,7 @@ export class Game {
         if (tile === TILE.SKY) continue;
         const x = originX + col * TILE_SIZE;
         const y = originY + row * TILE_SIZE;
-        drawTerrainTile(ctx, this.map, tile, col, row, x, y, TILE_SIZE);
+        drawTerrainTileFieldClipped(ctx, this.map, this.field, tile, col, row, x, y, TILE_SIZE);
       }
     }
 
