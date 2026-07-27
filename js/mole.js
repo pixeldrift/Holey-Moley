@@ -39,6 +39,21 @@ const FALL_SPEED_MULTIPLIER = 1.5; // falling off a wall drops faster than climb
 // reading it, like creatures.js's collision) that the whole tile is open.
 const TUNNEL_FRACTION_THRESHOLD = 0.15;
 
+// Small-island cleanup (see ScalarField.pruneSmallIslands, called from _digFieldWorld after
+// every dig - both the discrete per-tile hop and continuous digging route through it): digging
+// around (but not quite through) a stray bit of material can leave it fully enclosed by open
+// space with no tile-center-aligned path that could ever reach it - exactly the "stray bits of
+// ground" artifact seen in wireframe mode. Auto-clearing anything that small removes them the
+// moment they'd form instead of requiring the player to notice and dig them out by hand.
+const ISLAND_MAX_AREA_TILES = 0.4; // tile-units^2 - well above the observed stray-fragment size,
+// comfortably below a real hanging overhang shelf, which stays connected to the surrounding mass
+// and is never a candidate in the first place (see pruneSmallIslands' "touches the scan window's
+// edge" check) regardless of area.
+const ISLAND_SCAN_MARGIN = 1.2; // tile-units beyond the dig radius the enclosure check searches
+const ISLAND_PRUNE_DIST_INTERVAL = 0.3; // tile-units of carve distance between prune scans - a
+// full window flood-fill every single continuous-dig frame would be wasteful; this throttles it
+// to roughly once every several frames while still catching a new island the moment it forms.
+
 // Which corner stays solid on each of the two "elbow" tiles (the orthogonal neighbors
 // flanking a diagonal step), keyed by the move's [dx,dy]. See tiles.js SHAPE.
 const DIAGONAL_ELBOW_SHAPES = {
@@ -85,6 +100,7 @@ export class Mole {
     this._pendingFall = false;
     this._digScoreCarry = 0; // fractional score between whole-star awards - see tryContinuousDig
     this._continuousDigActive = false; // set for one frame by tryContinuousDig - see update()
+    this._islandPruneDistAccum = 0; // carve-distance throttle - see _digFieldWorld
     this.onScoreChange = null;
     this.onEnergyChange = null;
     this.onStarsEarned = null;
@@ -616,6 +632,16 @@ export class Mole {
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
       this.field.subtractCircle(fromX + (toX - fromX) * t, fromY + (toY - fromY) * t, DIG_RADIUS);
+    }
+
+    // Every dig - the one-off per-tile hop and each tiny continuous-dig frame alike - can leave a
+    // stray bit of material fully enclosed by the space just carved around it. Distance-throttled
+    // (see ISLAND_PRUNE_DIST_INTERVAL) rather than run on literally every call, since continuous
+    // digging calls this every frame with a sliver of distance each time.
+    this._islandPruneDistAccum += dist;
+    if (this._islandPruneDistAccum >= ISLAND_PRUNE_DIST_INTERVAL) {
+      this._islandPruneDistAccum = 0;
+      this.field.pruneSmallIslands((fromX + toX) / 2, (fromY + toY) / 2, DIG_RADIUS + ISLAND_SCAN_MARGIN, ISLAND_MAX_AREA_TILES);
     }
   }
 

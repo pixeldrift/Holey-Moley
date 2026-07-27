@@ -169,6 +169,73 @@ export class ScalarField {
     this._invalidateTileCache(cx, cy, r);
   }
 
+  // Flood-fills solid points within a local window around (cx,cy) and clears any connected
+  // component that's both small (<= maxAreaTiles, in tile-units^2) AND fully enclosed - never
+  // touches the window's own edge. "Touches the edge" is what tells a genuinely tiny, fully
+  // surrounded stray fragment apart from a much bigger solid mass (a wall, a real hanging
+  // overhang shelf still attached to the world) that just happens to extend past this window -
+  // the latter always touches the edge somewhere and is never a candidate, regardless of area,
+  // so a legitimate overhang (see field-collision.js's overhang barrier) is never at risk here.
+  // See Mole._digFieldWorld for when/how often this runs.
+  pruneSmallIslands(cx, cy, scanRadius, maxAreaTiles) {
+    const { res, pointsW, pointsH, samples } = this;
+    const pxMin = Math.max(0, Math.floor((cx - scanRadius) * res));
+    const pxMax = Math.min(pointsW - 1, Math.ceil((cx + scanRadius) * res));
+    const pyMin = Math.max(0, Math.floor((cy - scanRadius) * res));
+    const pyMax = Math.min(pointsH - 1, Math.ceil((cy + scanRadius) * res));
+    const w = pxMax - pxMin + 1, h = pyMax - pyMin + 1;
+    if (w <= 0 || h <= 0) return;
+
+    const maxAreaPoints = maxAreaTiles * res * res;
+    const visited = new Uint8Array(w * h);
+    const stackX = new Int32Array(w * h);
+    const stackY = new Int32Array(w * h);
+    const compX = new Int32Array(Math.min(w * h, maxAreaPoints + 1));
+    const compY = new Int32Array(compX.length);
+    const NX = [1, -1, 0, 0], NY = [0, 0, 1, -1];
+
+    for (let ly = 0; ly < h; ly++) {
+      for (let lx = 0; lx < w; lx++) {
+        const startLocal = ly * w + lx;
+        if (visited[startLocal]) continue;
+        const gx0 = pxMin + lx, gy0 = pyMin + ly;
+        if (samples[gy0 * pointsW + gx0] < SOLID_THRESHOLD) { visited[startLocal] = 1; continue; }
+
+        let sp = 0, cp = 0, touchesEdge = false, tooBig = false;
+        stackX[sp] = lx; stackY[sp] = ly; sp++;
+        visited[startLocal] = 1;
+
+        while (sp > 0) {
+          sp--;
+          const clx = stackX[sp], cly = stackY[sp];
+          if (clx === 0 || clx === w - 1 || cly === 0 || cly === h - 1) touchesEdge = true;
+          if (!tooBig) {
+            if (cp < compX.length) { compX[cp] = clx; compY[cp] = cly; cp++; }
+            else tooBig = true;
+          }
+          for (let k = 0; k < 4; k++) {
+            const nlx = clx + NX[k], nly = cly + NY[k];
+            if (nlx < 0 || nlx >= w || nly < 0 || nly >= h) continue;
+            const nLocal = nly * w + nlx;
+            if (visited[nLocal]) continue;
+            visited[nLocal] = 1;
+            const ngx = pxMin + nlx, ngy = pyMin + nly;
+            if (samples[ngy * pointsW + ngx] < SOLID_THRESHOLD) continue; // open - not part of the island
+            stackX[sp] = nlx; stackY[sp] = nly; sp++;
+          }
+        }
+
+        if (!touchesEdge && !tooBig) {
+          for (let i = 0; i < cp; i++) {
+            samples[(pyMin + compY[i]) * pointsW + (pxMin + compX[i])] = 0;
+          }
+        }
+      }
+    }
+
+    this._invalidateTileCache(cx, cy, scanRadius);
+  }
+
   // Every tile whose own point block overlaps the circle's bounding box needs its cache entry
   // dropped - not just the tile(s) the center falls in, since a dig can graze a neighbor's edge
   // (or, per the shared-edge seeding note above, even just touching one tile's own points can
