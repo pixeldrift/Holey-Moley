@@ -3,10 +3,34 @@ import { ENERGY, FOOD_TYPES, FOOD_ID_TO_TYPE } from "./constants.js";
 import { SOLID_THRESHOLD } from "./field.js";
 import { raycast, canEnterField, findSupport, isOverhangNormal } from "./field-collision.js";
 
-// How far (tile-units) the mole's gravity search reaches for a nearby surface to stick to - see
-// _checkSupport. Matches "shouldn't fall straight down a shaft unless an edge is more than a
-// tile away."
-const GRAVITY_SEARCH_DIST = 1.0;
+// How far (tile-units) _moleRenderAngle's floor-tilt fallback searches for a nearby surface to
+// visually lean toward - purely cosmetic, decoupled from the actual gravity/support logic below
+// (see _checkSupport, which no longer uses this - it has its own, tighter, correctness-critical
+// distances).
+const GRAVITY_SEARCH_DIST = 0.7;
+
+// _checkSupport's gravity query starts from the mole's tile CENTER (col+0.5, row+0.5), not its
+// feet - ordinary flat ground is a full half-tile below that origin, so the straight-down check
+// has to reach at least 0.5 tile-units to find it at all; a bit of margin on top handles a
+// gently sloped floor without being so generous it starts finding "floor" that's really just
+// the near edge of a much bigger drop.
+const FLOOR_CHECK_DIST = 0.6;
+
+// Half the widest floor gap (or shaft) the mole can bridge without falling - "should be able to
+// pass over a single-width burrow opening, but nothing larger." A single "is anything solid
+// within X of me" probe can't tell a one-tile notch apart from the near edge of a much wider
+// chasm - the tile center sitting over EITHER is always exactly half a tile from its own nearest
+// edge, regardless of how wide the open span actually is. Requiring solid ground within this
+// distance on BOTH sides (see _checkSupport) is what actually pins the total open span to at
+// most 2x this value - and it's the same check whether the flanking solid material happens to be
+// two floor-edges (a horizontal gap) or two shaft walls (a narrow vertical shaft): both present
+// the identical immediate geometry from the mole's position, nothing directly underfoot with
+// solid material close on either side. Set a bit past the naive 0.5 (confirmed via a direct
+// raycast probe, not just assumed): field.js's boundary-point seeding convention biases a fresh
+// dig's un-touched neighbor to bleed in by up to half a sub-cell, which can push a wall that's
+// geometrically exactly half a tile away out to slightly more than that - plenty of margin still
+// remains before this could ever reach a genuine 2-tile-wide gap's far side (1.5 tiles away).
+const GAP_BRIDGE_HALF_WIDTH = 0.6;
 
 // Radius (tile-units) of the circle a dig carves into the field - see Mole._digField. Chosen so
 // consecutive orthogonal AND diagonal dig steps connect with no gap: adjacent cell centers are
@@ -515,22 +539,36 @@ export class Mole {
     }
   }
 
-  // Gravity's "stick to the closest surface" rule (see field-collision.js findSupport) - not
-  // just what's directly underfoot, so the mole doesn't free-fall down the middle of a shaft
-  // it's close enough to lean against a wall in instead ("shouldn't fall straight down a shaft
-  // unless an edge is more than a tile away"). A wall found closer than any floor auto-attaches
-  // to it (same wallDx state a deliberate player-driven attach uses - see _attemptAttach)
-  // instead of just reporting "supported" and leaving the mole floating unattached next to it.
-  // Without a field this degrades to the plain floor-only check, same as before.
+  // Gravity's "stick to the closest surface" rule - not just what's directly underfoot, so the
+  // mole doesn't free-fall down the middle of a shaft or gap it's narrow enough to bridge
+  // instead. Two checks, in order: solid ground genuinely right below (the common case), then -
+  // only if that fails - solid material close on BOTH sides at once (see GAP_BRIDGE_HALF_WIDTH),
+  // which is what actually bounds "narrow enough to bridge" to a single tile-width, covering a
+  // horizontal floor gap and a narrow vertical shaft with the same symmetric test, since both
+  // present identical immediate geometry from the mole's position. Bridging via a wall-like hit
+  // auto-attaches to it (same wallDx state a deliberate player-driven attach uses - see
+  // _attemptAttach) instead of just reporting "supported" and leaving the mole floating
+  // unattached next to it. Without a field this degrades to the plain floor-only check, same as
+  // before.
   _checkSupport() {
     if (!this.field) return this._hasFloorBelow();
     if (this.map.getTile(this.col, this.row) === TILE.SURFACE) return true;
-    const support = findSupport(this.field, this.col + 0.5, this.row + 0.5, GRAVITY_SEARCH_DIST);
-    if (!support) return false;
-    if (Math.abs(support.normal.x) > Math.abs(support.normal.y)) {
-      this.wallDx = support.x > this.col + 0.5 ? 1 : -1;
+
+    const cx = this.col + 0.5, cy = this.row + 0.5;
+    const below = raycast(this.field, cx, cy, 0, 1, FLOOR_CHECK_DIST);
+    if (below && !isOverhangNormal(below.normal)) return true;
+
+    const left = raycast(this.field, cx, cy, -1, 0, GAP_BRIDGE_HALF_WIDTH);
+    const right = raycast(this.field, cx, cy, 1, 0, GAP_BRIDGE_HALF_WIDTH);
+    if (left && right) {
+      const nearer = left.dist <= right.dist ? left : right;
+      if (Math.abs(nearer.normal.x) > Math.abs(nearer.normal.y)) {
+        this.wallDx = nearer.x > cx ? 1 : -1;
+      }
+      return true;
     }
-    return true;
+
+    return false;
   }
 
   _updateSleep(dt) {
@@ -760,6 +798,17 @@ function _moleRenderAngle(mole, solidDir) {
 // body of drawMole() for spritesheet blitting later without changing Mole's API.
 // ---------------------------------------------------------------------------
 
+// Shifts the whole body+legs group toward its own local "down" (applied after rotation, so it's
+// always toward the feet relative to whatever surface the mole is currently tilted against, not
+// a naive screen-space shift) - a squat, low-slung stance instead of visibly perched up on its
+// legs. Body art unit scale (see drawMole's s = tileSize/48).
+const GROUND_OFFSET = 5;
+
+// Flung dirt particles while digging (see drawMole) - how many launch at once, and how long
+// each one's toss-and-fall loop takes before it resets.
+const DIRT_PARTICLE_COUNT = 5;
+const DIRT_PARTICLE_LIFETIME = 0.45;
+
 export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
   const t = nowMs / 1000;
   const flip = mole.facing === "left" ? -1 : 1;
@@ -786,13 +835,15 @@ export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
   const bob = mole.state === "walk" || mole.state === "climb" ? Math.sin(cycle) * 2.2 : Math.sin(t * 2) * 1.2;
   const s = tileSize / 48; // base art at 48px tile
 
-  ctx.translate(0, bob * s);
+  // Sits closer to the ground than the body/leg geometry below would put it on its own - a
+  // squat, low-slung digger rather than something perched up on its legs.
+  ctx.translate(0, (bob + GROUND_OFFSET) * s);
 
   const bodyColor = hurtFlash ? "#c0503f" : mole.colors.body;
   const bellyColor = hurtFlash ? "#f0b3a8" : mole.colors.belly;
   const darkColor = shade(mole.colors.body, -0.28);
 
-  // Legs (behind body), animate paw swipe when digging.
+  // Legs (behind body), short stubby stance - animate paw swipe when digging.
   ctx.fillStyle = darkColor;
   const legSwing = mole.state === "dig" ? Math.sin(t * 18) * 6 : Math.sin(cycle) * 5;
   drawLeg(ctx, -10 * s, 10 * s, legSwing * s, s);
@@ -837,12 +888,16 @@ export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
   ctx.arc(-2 * s, -10 * s, 3 * s, 0, Math.PI * 2);
   ctx.fill();
 
-  // Front paws - big swipe animation while digging, chew motion while eating.
+  // Front paws - a scooping/swimming stroke while digging (each paw loops forward-and-up then
+  // pulls back-and-down through the dirt, half a cycle out of phase with the other so they
+  // alternate instead of moving in lockstep), chew motion while eating.
   ctx.fillStyle = "#c9a876";
   if (mole.state === "dig") {
-    const swipe = (Math.sin(t * 18) + 1) / 2;
-    drawPaw(ctx, 12 * s + swipe * 6 * s, -2 * s + swipe * 4 * s, s);
-    drawPaw(ctx, 12 * s - swipe * 4 * s, 2 * s - swipe * 2 * s, s);
+    const digPhase = t * 16;
+    const leftPaw = _scoopingPawOffset(digPhase);
+    const rightPaw = _scoopingPawOffset(digPhase + Math.PI);
+    drawPaw(ctx, 12 * s + leftPaw.x * s, leftPaw.y * s, s);
+    drawPaw(ctx, 12 * s + rightPaw.x * s, rightPaw.y * s, s);
   } else if (mole.state === "eat") {
     const chew = (Math.sin(t * 14) + 1) / 2;
     drawPaw(ctx, 14 * s, -1 * s - chew * 2 * s, s);
@@ -855,18 +910,24 @@ export function drawMole(ctx, mole, screenX, screenY, tileSize, nowMs) {
     drawPaw(ctx, 13 * s, 4 * s, s);
   }
 
-  // Dirt crumb particles while digging.
+  // Dirt flung from the scooping paws - each particle launches, arcs under gravity, and fades
+  // out on a repeating loop (deterministic per-particle angle/speed via its index, not real
+  // randomness) rather than the old fixed circular orbit, so it reads as debris being thrown
+  // instead of decoration cycling in place.
   if (mole.state === "dig") {
     ctx.fillStyle = "#7a4d2a";
-    for (let i = 0; i < 3; i++) {
-      const a = t * 10 + i * 2.1;
-      const dist = 16 + (i * 3);
-      const px = Math.cos(a) * dist * 0.3 * s + 18 * s;
-      const py = Math.sin(a * 1.7) * 6 * s - 2 * s;
+    for (let i = 0; i < DIRT_PARTICLE_COUNT; i++) {
+      const local = ((t + i / DIRT_PARTICLE_COUNT) % DIRT_PARTICLE_LIFETIME) / DIRT_PARTICLE_LIFETIME;
+      const angle = -0.9 + (i / (DIRT_PARTICLE_COUNT - 1)) * 1.4; // fan of launch angles, up and forward
+      const speed = 20 + i * 2;
+      const px = 15 * s + Math.cos(angle) * speed * local * s * 0.4;
+      const py = -1 * s - Math.sin(angle) * speed * local * s * 0.4 + 26 * s * local * local; // parabolic fall
+      ctx.globalAlpha = 1 - local;
       ctx.beginPath();
-      ctx.arc(px, py, 1.6 * s, 0, Math.PI * 2);
+      ctx.arc(px, py, (1.8 - local) * s, 0, Math.PI * 2);
       ctx.fill();
     }
+    ctx.globalAlpha = 1;
   }
 
   ctx.restore();
@@ -956,7 +1017,7 @@ function drawLeg(ctx, x, y, swing, s) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate((swing / 20));
-  ctx.fillRect(-2.5 * s, 0, 5 * s, 8 * s);
+  ctx.fillRect(-2.5 * s, 0, 5 * s, 5 * s); // short and stubby, not perched up on long legs
   ctx.restore();
 }
 
@@ -964,4 +1025,11 @@ function drawPaw(ctx, x, y, s) {
   ctx.beginPath();
   ctx.ellipse(x, y, 4.5 * s, 3.5 * s, 0, 0, Math.PI * 2);
   ctx.fill();
+}
+
+// A tilted, flattened oval offset from the paw's base position - reach forward-and-up, then pull
+// back-and-down through the dirt, tracing a loop rather than a simple back-and-forth swipe, so
+// it reads as a scooping/swimming stroke.
+function _scoopingPawOffset(phase) {
+  return { x: Math.cos(phase) * 6, y: Math.sin(phase) * 2 + 2 };
 }
