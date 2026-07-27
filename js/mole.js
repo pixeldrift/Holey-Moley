@@ -721,9 +721,19 @@ function _surfaceAngle(nx, ny) {
 // own retained-corner direction (solidDir, from TileMap.diagonalSlopeDir) IS the correct "wall"
 // to feed _wallAngle - the same relationship an ant's ramp render angle already relies on (see
 // creatures.js _antRenderAngle's doc comment: wall-travel, the diagonal leg's perpendicular-to-
-// tangent direction, equals that tile's own retained corner). A plain vertical move with no
-// wall reference at all (burrowing straight up/down through open dirt, not clinging to any
-// side) has no surface to match, so it keeps the older, simpler up/down tilt instead.
+// tangent direction, equals that tile's own retained corner). Failing both of those, ordinary
+// standing/walking ground is no longer assumed flat either - now that the field can carve any
+// curve, not just 45-degree cuts, a single findSupport() sample (the same closest-surface query
+// gravity already uses, itself already a small fan of angles around straight-down rather than
+// one probe) gives the true local slope directly under the mole; deliberately not a two-point
+// nose/tail sample, since at this field resolution a single normal is already smooth, and a
+// two-point average risks implying a tilt that doesn't match either point's real surface right
+// at a ledge edge or sharp corner. Checked only AFTER the vertical-climb case below, not before
+// it: mid-climb, findSupport's fan can easily pick up a nearby side wall the mole is passing
+// through the middle of (not resting against), which would read as an incorrect, jittery lean
+// instead of the plain up/down a straight climb should show. A plain vertical move with no wall
+// or floor reference at all (burrowing straight up/down through open dirt with nothing nearby
+// to find) keeps the older, simpler up/down tilt as a last resort.
 function _moleRenderAngle(mole, solidDir) {
   if (mole.wallDx !== 0) {
     if (mole.field) {
@@ -736,6 +746,10 @@ function _moleRenderAngle(mole, solidDir) {
   if (mole.actionType === MOVE_ACTION.CLIMB && mole.actionTarget) {
     const goingUp = mole.actionTarget.row < mole.row;
     return goingUp ? -Math.PI / 2 : Math.PI / 2;
+  }
+  if (mole.field && !mole.falling) {
+    const support = findSupport(mole.field, mole.px + 0.5, mole.py + 0.5, GRAVITY_SEARCH_DIST);
+    if (support) return _surfaceAngle(support.normal.x, support.normal.y);
   }
   return 0;
 }
