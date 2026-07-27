@@ -39,6 +39,21 @@ const FALL_SPEED_MULTIPLIER = 1.5; // falling off a wall drops faster than climb
 // reading it, like creatures.js's collision) that the whole tile is open.
 const TUNNEL_FRACTION_THRESHOLD = 0.15;
 
+// Small-island cleanup (see ScalarField.pruneSmallIslands, called from _digFieldWorld after
+// every dig - both the discrete per-tile hop and continuous digging route through it): digging
+// around (but not quite through) a stray bit of material can leave it fully enclosed by open
+// space with no tile-center-aligned path that could ever reach it - exactly the "stray bits of
+// ground" artifact seen in wireframe mode. Auto-clearing anything that small removes them the
+// moment they'd form instead of requiring the player to notice and dig them out by hand.
+const ISLAND_MAX_AREA_TILES = 0.4; // tile-units^2 - well above the observed stray-fragment size,
+// comfortably below a real hanging overhang shelf, which stays connected to the surrounding mass
+// and is never a candidate in the first place (see pruneSmallIslands' "touches the scan window's
+// edge" check) regardless of area.
+const ISLAND_SCAN_MARGIN = 1.2; // tile-units beyond the dig radius the enclosure check searches
+const ISLAND_PRUNE_DIST_INTERVAL = 0.3; // tile-units of carve distance between prune scans - a
+// full window flood-fill every single continuous-dig frame would be wasteful; this throttles it
+// to roughly once every several frames while still catching a new island the moment it forms.
+
 // Which corner stays solid on each of the two "elbow" tiles (the orthogonal neighbors
 // flanking a diagonal step), keyed by the move's [dx,dy]. See tiles.js SHAPE.
 const DIAGONAL_ELBOW_SHAPES = {
@@ -85,6 +100,7 @@ export class Mole {
     this._pendingFall = false;
     this._digScoreCarry = 0; // fractional score between whole-star awards - see tryContinuousDig
     this._continuousDigActive = false; // set for one frame by tryContinuousDig - see update()
+    this._islandPruneDistAccum = 0; // carve-distance throttle - see _digFieldWorld
     this.onScoreChange = null;
     this.onEnergyChange = null;
     this.onStarsEarned = null;
@@ -617,6 +633,16 @@ export class Mole {
       const t = i / steps;
       this.field.subtractCircle(fromX + (toX - fromX) * t, fromY + (toY - fromY) * t, DIG_RADIUS);
     }
+
+    // Every dig - the one-off per-tile hop and each tiny continuous-dig frame alike - can leave a
+    // stray bit of material fully enclosed by the space just carved around it. Distance-throttled
+    // (see ISLAND_PRUNE_DIST_INTERVAL) rather than run on literally every call, since continuous
+    // digging calls this every frame with a sliver of distance each time.
+    this._islandPruneDistAccum += dist;
+    if (this._islandPruneDistAccum >= ISLAND_PRUNE_DIST_INTERVAL) {
+      this._islandPruneDistAccum = 0;
+      this.field.pruneSmallIslands((fromX + toX) / 2, (fromY + toY) / 2, DIG_RADIUS + ISLAND_SCAN_MARGIN, ISLAND_MAX_AREA_TILES);
+    }
   }
 
   _applyFood(typeKey) {
@@ -695,9 +721,19 @@ function _surfaceAngle(nx, ny) {
 // own retained-corner direction (solidDir, from TileMap.diagonalSlopeDir) IS the correct "wall"
 // to feed _wallAngle - the same relationship an ant's ramp render angle already relies on (see
 // creatures.js _antRenderAngle's doc comment: wall-travel, the diagonal leg's perpendicular-to-
-// tangent direction, equals that tile's own retained corner). A plain vertical move with no
-// wall reference at all (burrowing straight up/down through open dirt, not clinging to any
-// side) has no surface to match, so it keeps the older, simpler up/down tilt instead.
+// tangent direction, equals that tile's own retained corner). Failing both of those, ordinary
+// standing/walking ground is no longer assumed flat either - now that the field can carve any
+// curve, not just 45-degree cuts, a single findSupport() sample (the same closest-surface query
+// gravity already uses, itself already a small fan of angles around straight-down rather than
+// one probe) gives the true local slope directly under the mole; deliberately not a two-point
+// nose/tail sample, since at this field resolution a single normal is already smooth, and a
+// two-point average risks implying a tilt that doesn't match either point's real surface right
+// at a ledge edge or sharp corner. Checked only AFTER the vertical-climb case below, not before
+// it: mid-climb, findSupport's fan can easily pick up a nearby side wall the mole is passing
+// through the middle of (not resting against), which would read as an incorrect, jittery lean
+// instead of the plain up/down a straight climb should show. A plain vertical move with no wall
+// or floor reference at all (burrowing straight up/down through open dirt with nothing nearby
+// to find) keeps the older, simpler up/down tilt as a last resort.
 function _moleRenderAngle(mole, solidDir) {
   if (mole.wallDx !== 0) {
     if (mole.field) {
@@ -710,6 +746,10 @@ function _moleRenderAngle(mole, solidDir) {
   if (mole.actionType === MOVE_ACTION.CLIMB && mole.actionTarget) {
     const goingUp = mole.actionTarget.row < mole.row;
     return goingUp ? -Math.PI / 2 : Math.PI / 2;
+  }
+  if (mole.field && !mole.falling) {
+    const support = findSupport(mole.field, mole.px + 0.5, mole.py + 0.5, GRAVITY_SEARCH_DIST);
+    if (support) return _surfaceAngle(support.normal.x, support.normal.y);
   }
   return 0;
 }
