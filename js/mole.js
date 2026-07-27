@@ -3,18 +3,11 @@ import { ENERGY, FOOD_TYPES, FOOD_ID_TO_TYPE } from "./constants.js";
 import { SOLID_THRESHOLD } from "./field.js";
 import { raycast, canEnterField, findSupport, isOverhangNormal } from "./field-collision.js";
 
-// How far (tile-units) _moleRenderAngle's floor-tilt fallback searches for a nearby surface to
-// visually lean toward - purely cosmetic, decoupled from the actual gravity/support logic below
-// (see _checkSupport, which no longer uses this - it has its own, tighter, correctness-critical
-// distances).
+// How far (tile-units) _checkSupport's wide fan searches for nearby floor-like ground (sloped or
+// curved terrain, not just flat) to stick to, and _moleRenderAngle's floor-tilt fallback reuses
+// the same distance to find a surface to visually lean toward - both fundamentally asking the
+// same "what's the nearest usable ground near here" question.
 const GRAVITY_SEARCH_DIST = 0.7;
-
-// _checkSupport's gravity query starts from the mole's tile CENTER (col+0.5, row+0.5), not its
-// feet - ordinary flat ground is a full half-tile below that origin, so the straight-down check
-// has to reach at least 0.5 tile-units to find it at all; a bit of margin on top handles a
-// gently sloped floor without being so generous it starts finding "floor" that's really just
-// the near edge of a much bigger drop.
-const FLOOR_CHECK_DIST = 0.6;
 
 // Half the widest floor gap (or shaft) the mole can bridge without falling - "should be able to
 // pass over a single-width burrow opening, but nothing larger." A single "is anything solid
@@ -45,6 +38,11 @@ const DIG_RADIUS = 0.55;
 // (confirmed: caused digging to advance on roughly 1 in 20 frames instead of every frame). The
 // margin pushes the check past the freshly-cleared circle into genuinely untouched material.
 const DIG_LOOKAHEAD = DIG_RADIUS + 0.15;
+
+// Multiplies every duration-based speed below (walking, climbing, digging, falling) so the whole
+// game can be slowed down uniformly from one place instead of hand-tuning each speed constant
+// separately and risking them drifting out of proportion with each other.
+const GLOBAL_SPEED_SCALE = 1.3;
 
 const WALK_DURATION = 220;
 const CLIMB_DURATION = 260;
@@ -210,7 +208,7 @@ export class Mole {
     // Same tiles.js digDuration/speedFactor pacing the discrete dig uses, expressed as a rate
     // instead of a fixed per-tile duration - moving any distance at any angle costs exactly the
     // same total time/energy/score per unit of material removed as before, just continuously.
-    const speed = 1000 / (aheadTile.digDuration * this.speedFactor); // tiles/sec
+    const speed = 1000 / (aheadTile.digDuration * this.speedFactor * GLOBAL_SPEED_SCALE); // tiles/sec
     const dist = (speed * dt) / 1000;
     const newX = this.px + nx * dist, newY = this.py + ny * dist;
 
@@ -261,7 +259,7 @@ export class Mole {
         this._bump();
         return;
       }
-      const duration = targetTile.digDuration * distanceScale * this.speedFactor;
+      const duration = targetTile.digDuration * distanceScale * this.speedFactor * GLOBAL_SPEED_SCALE;
       const cost = targetTile.digEnergyCost * this.strengthFactor;
       this._beginAction(MOVE_ACTION.DIG, targetCol, targetRow, duration, cost, targetTile);
       return;
@@ -441,7 +439,7 @@ export class Mole {
   // so only a purely vertical move (no horizontal component at all) is a real climb.
   _beginWalkOrClimb(targetCol, targetRow, dx, dy, distanceScale, targetTile) {
     const isVertical = dy !== 0 && dx === 0;
-    const duration = (isVertical ? CLIMB_DURATION : WALK_DURATION) * distanceScale * this.speedFactor;
+    const duration = (isVertical ? CLIMB_DURATION : WALK_DURATION) * distanceScale * this.speedFactor * GLOBAL_SPEED_SCALE;
     const cost = isVertical ? ENERGY.CLIMB_COST : ENERGY.WALK_COST;
     this._beginAction(isVertical ? MOVE_ACTION.CLIMB : MOVE_ACTION.WALK, targetCol, targetRow, duration, cost, targetTile);
   }
@@ -541,22 +539,34 @@ export class Mole {
 
   // Gravity's "stick to the closest surface" rule - not just what's directly underfoot, so the
   // mole doesn't free-fall down the middle of a shaft or gap it's narrow enough to bridge
-  // instead. Two checks, in order: solid ground genuinely right below (the common case), then -
-  // only if that fails - solid material close on BOTH sides at once (see GAP_BRIDGE_HALF_WIDTH),
-  // which is what actually bounds "narrow enough to bridge" to a single tile-width, covering a
-  // horizontal floor gap and a narrow vertical shaft with the same symmetric test, since both
-  // present identical immediate geometry from the mole's position. Bridging via a wall-like hit
-  // auto-attaches to it (same wallDx state a deliberate player-driven attach uses - see
-  // _attemptAttach) instead of just reporting "supported" and leaving the mole floating
-  // unattached next to it. Without a field this degrades to the plain floor-only check, same as
-  // before.
+  // instead, and correctly reads sloped/curved ground (a round cavern's floor, a dug incline),
+  // not just perfectly flat tiles. Two checks, in order:
+  //  1. A wide fan (findSupport, same as the render-tilt code uses) for genuinely floor-like
+  //     ground - a hit whose normal is more vertical than horizontal - in any nearby direction,
+  //     not just straight down. This is what makes sloped/curved terrain work; restricting this
+  //     to a single straight-down probe (an earlier version of this method) missed real floor
+  //     the instant it wasn't perfectly flat, which - now that digging can carve any curve, and
+  //     especially right after continuous digging stops in whatever direction it happened to be
+  //     moving - triggered spurious falls constantly.
+  //  2. Only if nothing floor-like was found: solid material close on BOTH sides at once (see
+  //     GAP_BRIDGE_HALF_WIDTH), which is what actually bounds "narrow enough to bridge" to about
+  //     a single tile-width, covering a horizontal floor gap and a narrow vertical shaft with the
+  //     same symmetric test - and specifically excludes the wall-like hits step 1 already
+  //     rejected, which is what stops the mole hovering over a gap wider than that (a wall-like
+  //     hit from the wide fan, on its own, can't tell a one-tile notch apart from the near edge
+  //     of a much wider chasm - both are exactly half a tile from the tile center either way).
+  // Bridging via a wall-like hit auto-attaches to it (same wallDx state a deliberate player-
+  // driven attach uses - see _attemptAttach) instead of just reporting "supported" and leaving
+  // the mole floating unattached next to it. Without a field this degrades to the plain
+  // floor-only check, same as before.
   _checkSupport() {
     if (!this.field) return this._hasFloorBelow();
     if (this.map.getTile(this.col, this.row) === TILE.SURFACE) return true;
 
     const cx = this.col + 0.5, cy = this.row + 0.5;
-    const below = raycast(this.field, cx, cy, 0, 1, FLOOR_CHECK_DIST);
-    if (below && !isOverhangNormal(below.normal)) return true;
+
+    const wide = findSupport(this.field, cx, cy, GRAVITY_SEARCH_DIST);
+    if (wide && Math.abs(wide.normal.y) >= Math.abs(wide.normal.x)) return true;
 
     const left = raycast(this.field, cx, cy, -1, 0, GAP_BRIDGE_HALF_WIDTH);
     const right = raycast(this.field, cx, cy, 1, 0, GAP_BRIDGE_HALF_WIDTH);
@@ -630,11 +640,27 @@ export class Mole {
   }
 
   _tickFall(dt) {
-    this.py += ((FALL_SPEED_MULTIPLIER / CLIMB_DURATION) * dt);
+    this.py += ((FALL_SPEED_MULTIPLIER / (CLIMB_DURATION * GLOBAL_SPEED_SCALE)) * dt);
     this.row = Math.floor(this.py);
-    // A diagonal tile (see tiles.js SHAPE) is only real ground to land on if its upward-facing
-    // edge is solid - falling through the open half of one keeps falling, same as an ant.
-    if (this.map.getTile(this.col, this.row).solid && this.map.isEdgeSolid(this.col, this.row, 0, 1)) {
+    // Landing has to check the same data _checkSupport used to decide whether to start falling
+    // in the first place - checking the legacy tile grid here (as this used to) while the field
+    // is what actually governs falling meant the two could flatly disagree: a tile still marked
+    // solid (not yet flipped to TUNNEL - see TUNNEL_FRACTION_THRESHOLD) but already mostly open
+    // in the field would "land" the mole right back into a spot _checkSupport would immediately
+    // reject again next frame, an endless fall/land/fall loop. Field-based: has the mole's own
+    // current row - this.row, already floor(py) above, the SAME value used for the tile-based
+    // fallback below - actually been reached by solid material. Sampling at this.row+0.5 (not
+    // this.py+0.5, which was tried first and shipped a real bug: it checks half a tile further
+    // down than this.row actually represents, landing the mole up to a full tile early and then
+    // immediately failing the next frame's support check from that too-high position - the exact
+    // "falls repeatedly at the same spot" loop this rewrite exists to fix in the first place,
+    // confirmed via live gameplay capture before landing on this version).
+    const landed = this.field
+      ? this.field.sampleWorld(this.col + 0.5, this.row + 0.5) >= SOLID_THRESHOLD
+      // A diagonal tile (see tiles.js SHAPE) is only real ground to land on if its upward-facing
+      // edge is solid - falling through the open half of one keeps falling, same as an ant.
+      : this.map.getTile(this.col, this.row).solid && this.map.isEdgeSolid(this.col, this.row, 0, 1);
+    if (landed) {
       this.falling = false;
       this.row -= 1;
       this.py = this.row;
